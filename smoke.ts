@@ -4,7 +4,7 @@
 //
 // (opinion_search, docket_lookup, court_list, and judge_lookup actually work
 // unauthenticated; the whole smoke is still token-gated for consistency, and
-// case_detail requires the token.)
+// case_detail and citation_lookup require the token.)
 //
 //   npm run smoke
 //
@@ -65,6 +65,23 @@ async function main(): Promise<void> {
   await run("judge_lookup", async () => {
     const body = parse(await client.callTool({ name: "judge_lookup", arguments: { name_last: "Ginsburg", limit: 3 } }));
     console.log(`     -> ${body.returned} person(s); first: ${body.results[0]?.name ?? "(none)"}`);
+  });
+
+  await run("citation_lookup", async () => {
+    // One real citation (Roe v. Wade) and one fabricated one: the fake must
+    // come back flagged NOT_FOUND.
+    const body = parse(
+      await client.callTool({
+        name: "citation_lookup",
+        arguments: { text: "See Roe v. Wade, 410 U.S. 113 (1973). But see Smith v. Imaginary, 999 U.S. 9999 (2099)." },
+      }),
+    );
+    console.log(
+      `     -> ${body.citations_checked} citation(s): ${body.found} found, ${body.not_found} not found; ` +
+        `first match: ${body.results[0]?.matches?.[0]?.case_name ?? "(none)"}`,
+    );
+    if (body.found < 1) throw new Error("expected the real citation (410 U.S. 113) to resolve");
+    if (body.not_found < 1) throw new Error("expected the fabricated citation to come back NOT_FOUND");
   });
 
   await run("case_detail", async () => {

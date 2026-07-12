@@ -141,6 +141,104 @@ const PEOPLE = {
   ],
 };
 
+// /citation-lookup/ responses: a bare JSON array (no DRF envelope), one item per
+// citation eyecite recognized in the submitted text. Field names and the per-
+// citation `status` codes follow CourtListener's source
+// (cl/citations/api_views.py + api_serializers.py): 200 found, 300 multiple
+// matches, 400 unknown reporter, 404 not found, 429 past the per-request
+// citation cap. `clusters` items are OpinionClusterSerializer objects (the same
+// snake_case shape as /clusters/{id}/).
+const CITATION_LOOKUP_MIXED = [
+  {
+    citation: "410 U.S. 113",
+    normalized_citations: ["410 U.S. 113"],
+    start_index: 26,
+    end_index: 38,
+    status: 200,
+    error_message: "",
+    clusters: [
+      {
+        id: 108713,
+        absolute_url: "/opinion/108713/roe-v-wade/",
+        case_name: "Roe v. Wade",
+        case_name_full: "Jane ROE, et al., Appellants, v. Henry WADE",
+        case_name_short: "Roe",
+        date_filed: "1973-01-22",
+        citations: [
+          { volume: 410, reporter: "U.S.", page: "113", type: 1 },
+          { volume: 93, reporter: "S. Ct.", page: "705", type: 2 },
+        ],
+        precedential_status: "Published",
+        citation_count: 12030,
+        judges: "Blackmun",
+        docket_id: 4463,
+        docket: "https://www.courtlistener.com/api/rest/v4/dockets/4463/",
+        sub_opinions: ["https://www.courtlistener.com/api/rest/v4/opinions/108713/"],
+      },
+    ],
+  },
+  {
+    citation: "999 U.S. 9999",
+    normalized_citations: ["999 U.S. 9999"],
+    start_index: 80,
+    end_index: 93,
+    status: 404,
+    error_message: "Citation not found: '999 U.S. 9999'",
+    clusters: [],
+  },
+];
+
+const CITATION_LOOKUP_EDGE = [
+  {
+    citation: "576 U.S. 644",
+    normalized_citations: ["576 U.S. 644"],
+    start_index: 0,
+    end_index: 12,
+    status: 300,
+    error_message: "",
+    clusters: [
+      {
+        id: 2812209,
+        absolute_url: "/opinion/2812209/obergefell-v-hodges/",
+        case_name: "Obergefell v. Hodges",
+        date_filed: "2015-06-26",
+        citations: [{ volume: 576, reporter: "U.S.", page: "644", type: 1 }],
+        precedential_status: "Published",
+        citation_count: 2400,
+        docket_id: 2965411,
+      },
+      {
+        id: 9999999,
+        absolute_url: "/opinion/9999999/obergefell-dup/",
+        case_name: "Obergefell v. Hodges (duplicate cluster)",
+        date_filed: "2015-06-26",
+        citations: [],
+        precedential_status: "Published",
+        citation_count: 0,
+        docket_id: 2965412,
+      },
+    ],
+  },
+  {
+    citation: "12 Imaginary Rptr. 34",
+    normalized_citations: [],
+    start_index: 20,
+    end_index: 41,
+    status: 400,
+    error_message: "Unable to find reporter with abbreviation of 'Imaginary Rptr.'",
+    clusters: [],
+  },
+  {
+    citation: "1 U.S. 1",
+    normalized_citations: ["1 U.S. 1"],
+    start_index: 60,
+    end_index: 68,
+    status: 429,
+    error_message: "Too many citations requested.",
+    clusters: [],
+  },
+];
+
 const CLUSTER = {
   id: 9335501,
   case_name: "Miranda v. Selig",
@@ -207,11 +305,11 @@ function lastUrl(): URL {
   return call[0] as URL;
 }
 
-/** The request init (headers, etc.) passed to the most recent fetch call. */
-function lastInit(): { headers: Record<string, string> } {
+/** The request init (headers, method, body, etc.) passed to the most recent fetch call. */
+function lastInit(): { headers: Record<string, string>; method?: string; body?: string } {
   const call = fetchMock.mock.calls.at(-1);
   if (!call) throw new Error("fetch was not called");
-  return call[1] as { headers: Record<string, string> };
+  return call[1] as { headers: Record<string, string>; method?: string; body?: string };
 }
 
 async function call(name: string, args: Record<string, unknown>) {
@@ -244,10 +342,11 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("tool registration", () => {
-  it("lists exactly the five documented tools", async () => {
+  it("lists exactly the six documented tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "case_detail",
+      "citation_lookup",
       "court_list",
       "docket_lookup",
       "judge_lookup",
@@ -509,6 +608,137 @@ describe("case_detail", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/cluster.*opinion/i);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("citation_lookup", () => {
+  it("POSTs the text as a JSON body and verifies a mixed found/not-found set, flagging the fake NOT_FOUND", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(CITATION_LOOKUP_MIXED));
+    const text = "In Roe v. Wade, 410 U.S. 113 (1973), the Court held. See also Smith v. Imaginary, 999 U.S. 9999 (2099).";
+    const body = payload(await call("citation_lookup", { text }));
+
+    // POST to /citation-lookup/ with a JSON body carrying only the text.
+    const url = lastUrl();
+    expect(url.origin + url.pathname).toBe("https://www.courtlistener.com/api/rest/v4/citation-lookup/");
+    const init = lastInit();
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body!)).toEqual({ text });
+
+    // Summary counts: one real, one fake, verified never claimed overall.
+    expect(body.citations_checked).toBe(2);
+    expect(body.found).toBe(1);
+    expect(body.not_found).toBe(1);
+    expect(body.all_verified).toBe(false);
+    expect(body.warning).toMatch(/did NOT verify/);
+    expect(body.warning).toMatch(/not found/i);
+    expect(body.warning).toMatch(/check them by hand/i);
+
+    // The real citation resolves with normalized cluster matches.
+    const hit = body.results[0];
+    expect(hit.citation).toBe("410 U.S. 113");
+    expect(hit.verified).toBe(true);
+    expect(hit.verdict).toBe("FOUND");
+    expect(hit.status).toBe(200);
+    expect(hit.normalized_citations).toEqual(["410 U.S. 113"]);
+    expect(hit.start_index).toBe(26);
+    expect(hit.end_index).toBe(38);
+    const match = hit.matches[0];
+    expect(match.cluster_id).toBe(108713);
+    expect(match.case_name).toBe("Roe v. Wade");
+    expect(match.date_filed).toBe("1973-01-22");
+    expect(match.citations).toEqual(["410 U.S. 113", "93 S. Ct. 705"]);
+    expect(match.precedential_status).toBe("Published");
+    expect(match.citation_count).toBe(12030);
+    expect(match.absolute_url).toBe("https://www.courtlistener.com/opinion/108713/roe-v-wade/");
+
+    // The fake citation gets an explicit NOT_FOUND flag.
+    const fake = body.results[1];
+    expect(fake.citation).toBe("999 U.S. 9999");
+    expect(fake.verified).toBe(false);
+    expect(fake.verdict).toBe("NOT_FOUND");
+    expect(fake.status).toBe(404);
+    expect(fake.error_message).toBe("Citation not found: '999 U.S. 9999'");
+    expect(fake.matches).toEqual([]);
+  });
+
+  it("maps multiple-match, unknown-reporter, and over-cap statuses", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(CITATION_LOOKUP_EDGE));
+    const body = payload(await call("citation_lookup", { text: "576 U.S. 644 et al." }));
+
+    expect(body.citations_checked).toBe(3);
+    expect(body.found).toBe(1);
+    expect(body.not_found).toBe(0);
+    expect(body.invalid).toBe(1);
+    expect(body.not_checked).toBe(1);
+    expect(body.all_verified).toBe(false);
+
+    // 300 = the citation is real but matches multiple clusters; both surfaced.
+    const multi = body.results[0];
+    expect(multi.verified).toBe(true);
+    expect(multi.verdict).toBe("FOUND_MULTIPLE");
+    expect(multi.matches).toHaveLength(2);
+    expect(multi.matches[0].case_name).toBe("Obergefell v. Hodges");
+
+    // 400 = the reporter abbreviation is not a known reporter.
+    const bad = body.results[1];
+    expect(bad.verified).toBe(false);
+    expect(bad.verdict).toBe("UNKNOWN_REPORTER");
+    expect(bad.error_message).toMatch(/Unable to find reporter/);
+
+    // 429 = past the per-request citation cap; returned flagged, not checked.
+    const over = body.results[2];
+    expect(over.verified).toBe(false);
+    expect(over.verdict).toBe("NOT_CHECKED_OVER_CAP");
+    expect(body.warning).toMatch(/split the text/i);
+  });
+
+  it("reports all_verified (and no warning) only when every citation resolves", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([CITATION_LOOKUP_MIXED[0]]));
+    const body = payload(await call("citation_lookup", { text: "410 U.S. 113" }));
+    expect(body.citations_checked).toBe(1);
+    expect(body.found).toBe(1);
+    expect(body.all_verified).toBe(true);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("handles a response with no recognized citations without claiming verification", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const body = payload(await call("citation_lookup", { text: "no citations in this text at all" }));
+    expect(body.citations_checked).toBe(0);
+    expect(body.all_verified).toBe(false);
+    expect(body.note).toMatch(/no citations were recognized/i);
+  });
+
+  it("rejects oversized text before any network call instead of truncating", async () => {
+    const res: any = await call("citation_lookup", { text: "x".repeat(64_001) });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("64000");
+    expect(res.content[0].text).toMatch(/split/i);
+    expect(res.content[0].text).toMatch(/nothing was sent/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires text (error, no network call)", async () => {
+    const res: any = await call("citation_lookup", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("errors clearly when the token is missing, without calling the API", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    const res: any = await call("citation_lookup", { text: "410 U.S. 113" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends the token as an Authorization header, never in the URL", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    await call("citation_lookup", { text: "410 U.S. 113" });
+    expect(lastInit().headers.Authorization).toBe("Token test-token");
+    expect(lastUrl().search).toBe("");
   });
 });
 

@@ -11,8 +11,9 @@
 // Endpoint access (see README.md "Data source"):
 //   /search/  (type=o opinions, type=r dockets), /courts/, /people/ all answer
 //   unauthenticated at low rate, so those tools attach the token only when it is
-//   set (a token raises the rate limit). /clusters/{id}/ and /opinions/{id}/
-//   return HTTP 401 without a token, so case_detail requires one.
+//   set (a token raises the rate limit). /clusters/{id}/, /opinions/{id}/, and
+//   POST /citation-lookup/ return HTTP 401 without a token, so case_detail and
+//   citation_lookup require one.
 //
 // This module normalizes CourtListener's raw JSON (caseName, dateFiled,
 // cluster_id, docket_absolute_url, ...) into clean, documented tool outputs
@@ -60,6 +61,21 @@ const SEARCH_PAGE_SIZE = 20;
 const MAX_COURT_PAGES = 200;
 /** Cap on opinion full-text length returned by case_detail (chars). */
 const TEXT_CAP = 50000;
+/**
+ * Server-side cap on citation-lookup input text (chars): the request serializer
+ * validates `text` at max_length 64,000 (CourtListener source,
+ * cl/citations/api_serializers.py). citation_lookup enforces it pre-flight with
+ * a clear error rather than letting the API 400, and never truncates.
+ */
+const CITATION_TEXT_CAP = 64_000;
+/**
+ * Citations actually checked per citation-lookup call (CourtListener's
+ * MAX_CITATIONS_PER_REQUEST, default 250; cl/settings/project/citations.py).
+ * Citations past the cap are still returned, each flagged status 429
+ * ("Too many citations requested."), surfaced here as NOT_CHECKED_OVER_CAP.
+ * The endpoint also rate-limits at 60 citations/min.
+ */
+const CITATION_MAX_PER_REQUEST = 250;
 
 // CourtListener /search/ `type` enum. Only the two
 // this server exposes are used; the rest are here for reference.
@@ -148,22 +164,11 @@ type Row = Record<string, unknown>;
 type QueryValue = string | number | undefined | null;
 
 /**
- * Execute one GET against the CourtListener API and return the parsed JSON.
- * Undefined/null/empty params are omitted. Set opts.requireAuth for endpoints
- * that 401 without a token (case_detail); it throws the token error pre-flight.
+ * Read a CourtListener response: surface DRF errors ({"detail":"..."}) on
+ * non-2xx, parse JSON on success, and reject non-JSON bodies (HTML error pages
+ * / proxy interstitials arrive as non-JSON with a 200). Shared by clGet/clPost.
  */
-async function clGet(
-  path: string,
-  params: Record<string, QueryValue> = {},
-  opts: { requireAuth?: boolean } = {},
-): Promise<unknown> {
-  const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
-  const url = new URL(`${CL_API}${path}`);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
-  }
-
-  const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(15_000) }));
+async function readClResponse(res: { ok: boolean; status: number; text: () => Promise<string> }): Promise<unknown> {
   const text = await res.text();
 
   if (!res.ok) {
@@ -181,9 +186,48 @@ async function clGet(
   try {
     return JSON.parse(text);
   } catch {
-    // HTML error pages / proxy interstitials arrive as non-JSON with a 200.
     throw new Error(`CourtListener API returned a non-JSON response: ${text.slice(0, 300).trim()}`);
   }
+}
+
+/**
+ * Execute one GET against the CourtListener API and return the parsed JSON.
+ * Undefined/null/empty params are omitted. Set opts.requireAuth for endpoints
+ * that 401 without a token (case_detail); it throws the token error pre-flight.
+ */
+async function clGet(
+  path: string,
+  params: Record<string, QueryValue> = {},
+  opts: { requireAuth?: boolean } = {},
+): Promise<unknown> {
+  const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
+  const url = new URL(`${CL_API}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+  }
+
+  const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(15_000) }));
+  return readClResponse(res);
+}
+
+/**
+ * Execute one POST against the CourtListener API (JSON body) and return the
+ * parsed JSON. Same throttle, timeout, and error surfacing as clGet; the token
+ * goes in the Authorization header, not the URL or the logs.
+ */
+async function clPost(
+  path: string,
+  body: Record<string, unknown>,
+  opts: { requireAuth?: boolean } = {},
+): Promise<unknown> {
+  const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
+  headers["Content-Type"] = "application/json";
+  const url = new URL(`${CL_API}${path}`);
+
+  const res = await throttled(() =>
+    fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }),
+  );
+  return readClResponse(res);
 }
 
 /** Pull the DRF `results` array out of a list/search envelope, defensively. */
@@ -435,6 +479,62 @@ function normalizeOpinionDetail(o: Row): Record<string, unknown> {
   };
 }
 
+// citation-lookup per-citation `status` codes, from CourtListener source
+// (cl/citations/api_views.py): HTTP-style codes embedded per item.
+//   200 found (one cluster)          300 found, multiple matching clusters
+//   400 unknown reporter             404 no such citation in the database
+//   429 past the per-request citation cap (not looked up)
+const CITATION_VERDICTS: Record<number, { verdict: string; verified: boolean }> = {
+  200: { verdict: "FOUND", verified: true },
+  300: { verdict: "FOUND_MULTIPLE", verified: true },
+  400: { verdict: "UNKNOWN_REPORTER", verified: false },
+  404: { verdict: "NOT_FOUND", verified: false },
+  429: { verdict: "NOT_CHECKED_OVER_CAP", verified: false },
+};
+
+/**
+ * Normalize one cluster attached to a citation-lookup hit. Same snake_case
+ * OpinionClusterSerializer shape as /clusters/{id}/, kept to the fields that
+ * identify the case. NOTE: the cluster payload does not carry the court (that
+ * lives on the docket); follow absolute_url or pass cluster_id to case_detail.
+ */
+function normalizeCitationMatch(c: Row): Record<string, unknown> {
+  return {
+    cluster_id: num(c.id),
+    case_name: str(c.case_name) ?? str(c.case_name_full),
+    date_filed: str(c.date_filed),
+    citations: normalizeCitations(c.citations),
+    precedential_status: str(c.precedential_status),
+    citation_count: num(c.citation_count),
+    judges: str(c.judges),
+    docket_id: num(c.docket_id),
+    absolute_url: fullUrl(c.absolute_url),
+  };
+}
+
+/** Normalize one /citation-lookup/ item (one citation found in the text). */
+function normalizeCitationResult(r: Row): Record<string, unknown> {
+  const status = num(r.status);
+  const meaning =
+    status != null
+      ? CITATION_VERDICTS[status] ?? { verdict: `STATUS_${status}`, verified: false }
+      : { verdict: "UNKNOWN", verified: false }; // never guess on a shape we don't know
+  const clusters = Array.isArray(r.clusters) ? (r.clusters as Row[]) : [];
+  return {
+    citation: str(r.citation),
+    verified: meaning.verified,
+    verdict: meaning.verdict,
+    status,
+    error_message: str(r.error_message),
+    normalized_citations: Array.isArray(r.normalized_citations)
+      ? (r.normalized_citations as unknown[]).map((x) => str(x)).filter((x): x is string => x != null)
+      : [],
+    start_index: num(r.start_index),
+    end_index: num(r.end_index),
+    matches: clusters.map(normalizeCitationMatch),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Input helpers
 // ---------------------------------------------------------------------------
@@ -560,6 +660,30 @@ const TOOLS: Tool[] = [
         },
       },
       required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "citation_lookup",
+    description:
+      "Verify legal citations against CourtListener's database of real cases before relying on them; catches " +
+      "fabricated or mangled citations. Pass free text (a brief, memo, or " +
+      "draft) or a single citation string; every citation recognized in the text is checked. Per citation: " +
+      "FOUND (with case name, date, and link) or an explicit NOT_FOUND / UNKNOWN_REPORTER flag. Requires " +
+      `COURTLISTENER_API_TOKEN (authentication-only endpoint). Caps: ${CITATION_TEXT_CAP} characters of text and ` +
+      `${CITATION_MAX_PER_REQUEST} citations per call (server rate limit: 60 citations/min).`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description:
+            `Free text to scan for citations (max ${CITATION_TEXT_CAP} characters), or a single citation string ` +
+            `like "410 U.S. 113". The first ${CITATION_MAX_PER_REQUEST} citations recognized are looked up; any ` +
+            "beyond that are returned flagged NOT_CHECKED_OVER_CAP.",
+        },
+      },
+      required: ["text"],
       additionalProperties: false,
     },
   },
@@ -720,6 +844,70 @@ async function caseDetail(args: Row): Promise<unknown> {
   return normalizeClusterDetail(c as Row);
 }
 
+async function citationLookup(args: Row): Promise<unknown> {
+  const text = str(args.text);
+  if (!text) {
+    throw new Error('text is required (free text containing citations, or a single citation string like "410 U.S. 113").');
+  }
+  // The endpoint validates text at 64,000 chars; enforce pre-flight.
+  // Nothing is truncated: a verifier that silently drops the tail of a brief
+  // would pass exactly the citations it never checked.
+  if (text.length > CITATION_TEXT_CAP) {
+    throw new Error(
+      `text is ${text.length} characters; the CourtListener citation-lookup endpoint caps text at ${CITATION_TEXT_CAP}. ` +
+        "Nothing was sent and nothing was truncated (a dropped tail would mean unchecked citations). " +
+        `Split the document and call once per chunk; each call checks up to ${CITATION_MAX_PER_REQUEST} citations.`,
+    );
+  }
+
+  // POST /citation-lookup/ is authentication-only (HTTP 401 without a token).
+  // requireAuth throws the token() setup error pre-flight.
+  const json = await clPost("/citation-lookup/", { text }, { requireAuth: true });
+
+  // The response is a bare JSON array (no DRF envelope), one item per citation
+  // recognized in the text.
+  const rows = Array.isArray(json) ? (json as Row[]) : [];
+  const results = rows.map(normalizeCitationResult);
+
+  const found = results.filter((r) => r.verified === true).length;
+  const notFound = results.filter((r) => r.verdict === "NOT_FOUND").length;
+  const invalid = results.filter((r) => r.verdict === "UNKNOWN_REPORTER").length;
+  const notChecked = results.filter((r) => r.verdict === "NOT_CHECKED_OVER_CAP").length;
+  const unverified = results.length - found;
+
+  const problems: string[] = [];
+  if (notFound) problems.push(`${notFound} not found in CourtListener (likely fabricated or mis-cited)`);
+  if (invalid) problems.push(`${invalid} with an unrecognized reporter`);
+  if (notChecked) {
+    problems.push(
+      `${notChecked} not checked (past the ${CITATION_MAX_PER_REQUEST}-citations-per-call cap; split the text and re-run the rest)`,
+    );
+  }
+  const otherUnverified = unverified - notFound - invalid - notChecked;
+  if (otherUnverified > 0) problems.push(`${otherUnverified} with an unexpected per-citation status`);
+
+  return {
+    query: { text_chars: text.length },
+    citations_checked: results.length,
+    found,
+    not_found: notFound,
+    invalid,
+    not_checked: notChecked,
+    // True only when at least one citation was recognized AND every one resolved.
+    all_verified: results.length > 0 && found === results.length,
+    warning:
+      problems.length > 0
+        ? `${unverified} of ${results.length} citation(s) did NOT verify: ${problems.join("; ")}. ` +
+          "Do not cite unverified authorities — check them by hand before filing."
+        : undefined,
+    note:
+      results.length === 0
+        ? "No citations were recognized in the text (nothing was checked — this is not a verification pass)."
+        : undefined,
+    results,
+  };
+}
+
 async function judgeLookup(args: Row): Promise<unknown> {
   const nameLast = str(args.name_last);
   const nameFirst = str(args.name_first);
@@ -745,6 +933,7 @@ const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
   docket_lookup: docketLookup,
   court_list: courtList,
   case_detail: caseDetail,
+  citation_lookup: citationLookup,
   judge_lookup: judgeLookup,
 };
 

@@ -12,6 +12,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 | `docket_lookup` | `q` and/or `docket_number` (at least one), `court`, `limit`, `cursor` | Docket search (`/search/?type=r`). Per hit: case name, court, docket number, filed/terminated dates, nature of suit, docket id, link. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
 | `court_list` | `jurisdiction`, `q`, `limit` | Courts and their ids (`/courts/`), the values used as the `court` filter above. Optional jurisdiction filter and a name substring filter applied across the full courts table (paged server-side). |
 | `case_detail` | `id` (required), `type` (`cluster` or `opinion`) | Full case by id. A cluster (`/clusters/{id}/`) gives case name, citations, date, judges, and its opinion ids. An opinion (`/opinions/{id}/`) gives the full opinion text. Requires a token. |
+| `citation_lookup` | `text` (required) | Verify citations (`POST /citation-lookup/`). Pass free text (a brief, a draft) or a single citation string; every citation recognized is checked against the database of real cases. Per citation: `FOUND` (with matched case name, date, link) or an explicit `NOT_FOUND` / `UNKNOWN_REPORTER` flag. Requires a token. |
 | `judge_lookup` | `name_last` and/or `name_first` (at least one), `limit` | Judges / people (`/people/`). Per person: id, assembled name, birth and death dates and place, gender, count of positions on file. |
 
 `order_by` for `opinion_search` is one of `relevance` (default), `newest`, `oldest`, `most_cited`. Court `jurisdiction` codes include `F` (federal appellate and other), `FD` (federal district), `FB` (bankruptcy), `S` (state), `SA` (state appellate), `SS` (state supreme).
@@ -20,14 +21,16 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 
 - Base URL: `https://www.courtlistener.com/api/rest/v4`
 - Auth: a free API token, sent as the header `Authorization: Token <token>`.
-- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` paginates by opaque `cursor`; the list endpoints (`/courts/`, `/people/`) paginate by page number (`?page=N`). Detail endpoints return a bare object.
-- Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/` and `/opinions/{id}/` return HTTP 401 without a token, so `case_detail` requires one.
+- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` paginates by opaque `cursor`; the list endpoints (`/courts/`, `/people/`) paginate by page number (`?page=N`). Detail endpoints return a bare object. `POST /citation-lookup/` returns a bare JSON array (one item per citation recognized in the text).
+- Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/`, `/opinions/{id}/`, and `POST /citation-lookup/` return HTTP 401 without a token, so `case_detail` and `citation_lookup` require one.
+- Citation-lookup limits (server-side): `text` max 64,000 characters (enforced pre-flight here with a clear error; the tool never truncates, since a dropped tail would mean unchecked citations); the first 250 citations per call are looked up and any beyond that come back flagged per-item as not checked; rate limit 60 citations/min.
 
 Sources:
 
 - REST API v4 overview and auth: https://www.courtlistener.com/help/api/rest/ (redirects to https://wiki.free.law/c/courtlistener/help/api/rest/v4/overview)
 - Search API (params, `type` enum, response fields): https://www.courtlistener.com/help/api/rest/search/ (redirects to https://wiki.free.law/c/courtlistener/help/api/rest/v4/search)
 - Case Law API (clusters, opinions): https://www.courtlistener.com/help/api/rest/case-law/ (redirects to https://wiki.free.law/c/courtlistener/help/api/rest/v4/case-law)
+- Citation Lookup API: https://www.courtlistener.com/help/api/rest/citation-lookup/ (redirects to https://wiki.free.law/c/courtlistener/help/api/rest/v4/citation-lookup), plus the endpoint's source in the CourtListener repo: `cl/citations/api_views.py` and `api_serializers.py` (request/response fields, per-citation status codes) and `cl/settings/project/citations.py` (the 250-citations-per-request cap). The endpoint returns HTTP 401 without a token.
 - The live API itself, for the search / courts / people field names: `/search/?type=o`, `/search/?type=r`, `/courts/`, `/people/` (all answer unauthenticated GETs).
 
 ### Field map (CourtListener to normalized output)
@@ -47,6 +50,9 @@ Sources:
 | `citations` (array of `{volume, reporter, page}`) | `citations` (formatted strings) | case_detail (cluster) |
 | `sub_opinions` (array of URLs) | `sub_opinion_ids` | case_detail (cluster) |
 | `plain_text` (fallback `html_with_citations`) | `text` (+ `text_source`, `text_truncated`) | case_detail (opinion) |
+| `citation`, `normalized_citations`, `start_index`, `end_index` | same names | citation_lookup (per citation) |
+| `status` (200/300/400/404/429), `error_message` | `status` + `verdict` (`FOUND`, `FOUND_MULTIPLE`, `UNKNOWN_REPORTER`, `NOT_FOUND`, `NOT_CHECKED_OVER_CAP`) + `verified`, `error_message` | citation_lookup (per citation) |
+| `clusters` (array of cluster objects) | `matches` (cluster id, case name, date, citations, link) | citation_lookup (per citation) |
 
 ## Install
 
@@ -60,7 +66,7 @@ npm install
 
 ## API token
 
-`case_detail` needs a free CourtListener token, and the other tools run faster (higher rate limit) with one. Create a free account, open Profile then the API page, and copy the token. Docs: https://www.courtlistener.com/help/api/rest/
+`case_detail` and `citation_lookup` need a free CourtListener token, and the other tools run faster (higher rate limit) with one. Create a free account, open Profile then the API page, and copy the token. Docs: https://www.courtlistener.com/help/api/rest/
 
 Expose it as `COURTLISTENER_API_TOKEN`:
 
@@ -69,7 +75,7 @@ export COURTLISTENER_API_TOKEN=your-token-here   # macOS / Linux
 setx COURTLISTENER_API_TOKEN your-token-here      # Windows (new shells)
 ```
 
-Without the token, `opinion_search`, `docket_lookup`, `court_list`, and `judge_lookup` still work at CourtListener's unauthenticated rate limit. `case_detail` returns a clear error telling you to set the token. The token is never logged.
+Without the token, `opinion_search`, `docket_lookup`, `court_list`, and `judge_lookup` still work at CourtListener's unauthenticated rate limit. `case_detail` and `citation_lookup` return a clear error telling you to set the token. The token is never logged.
 
 ## MCP client config
 
@@ -94,34 +100,93 @@ Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "ord
 ```json
 {
   "query": { "q": "warrantless search", "court": "scotus", "filed_after": null, "filed_before": null, "order_by": "most_cited" },
-  "total_matches": 630,
+  "total_matches": 161,
   "returned": 1,
   "results": [
     {
-      "case_name": "Miranda v. Selig",
+      "case_name": "Illinois v. Gates",
       "court": "Supreme Court of the United States",
       "court_id": "scotus",
-      "date_filed": "2017-12-04",
-      "citations": ["138 S. Ct. 507", "199 L. Ed. 2d 386"],
-      "docket_number": "17-453",
-      "cite_count": 3,
+      "date_filed": "1983-06-08",
+      "citations": ["76 L. Ed. 2d 527", "103 S. Ct. 2317", "462 U.S. 213", "1983 U.S. LEXIS 54", "51 U.S.L.W. 4709"],
+      "docket_number": "81-430",
+      "cite_count": 16741,
       "status": "Published",
-      "snippet": "The Fifth Amendment privilege ...",
-      "cluster_id": 9335501,
-      "docket_id": 66645415,
-      "absolute_url": "https://www.courtlistener.com/opinion/9335501/miranda-v-selig/"
+      "snippet": "Justice White, concurring in the judgment. In my view, the question regarding modification of the exclusionary rule ...",
+      "cluster_id": 110959,
+      "docket_id": 638808,
+      "absolute_url": "https://www.courtlistener.com/opinion/110959/illinois-v-gates/"
     }
   ]
 }
 ```
 
-Then pass the `cluster_id` to `case_detail` (`{ "id": 9335501 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text.
+Then pass the `cluster_id` to `case_detail` (`{ "id": 110959 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text.
+
+## Example: verifying citations before filing
+
+Courts have sanctioned filings built on citations that do not exist. A legal-aid worker or a pro-se litigant can run a draft's citations through `citation_lookup` before anything reaches a judge:
+
+Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. Wade, 410 U.S. 113 (1973); Smith v. Imaginary, 999 U.S. 9999 (2099)." }`:
+
+```json
+{
+  "query": { "text_chars": 107 },
+  "citations_checked": 2,
+  "found": 1,
+  "not_found": 1,
+  "invalid": 0,
+  "not_checked": 0,
+  "all_verified": false,
+  "warning": "1 of 2 citation(s) did NOT verify: 1 not found in CourtListener (likely fabricated or mis-cited). Do not cite unverified authorities — check them by hand before filing.",
+  "results": [
+    {
+      "citation": "410 U.S. 113",
+      "verified": true,
+      "verdict": "FOUND",
+      "status": 200,
+      "error_message": null,
+      "normalized_citations": ["410 U.S. 113"],
+      "start_index": 45,
+      "end_index": 57,
+      "matches": [
+        {
+          "cluster_id": 108713,
+          "case_name": "Roe v. Wade",
+          "date_filed": "1973-01-22",
+          "citations": ["410 U.S. 113", "93 S. Ct. 705", "35 L. Ed. 2d 147"],
+          "precedential_status": "Published",
+          "citation_count": 12030,
+          "judges": "Blackmun",
+          "docket_id": 4463,
+          "absolute_url": "https://www.courtlistener.com/opinion/108713/roe-v-wade/"
+        }
+      ]
+    },
+    {
+      "citation": "999 U.S. 9999",
+      "verified": false,
+      "verdict": "NOT_FOUND",
+      "status": 404,
+      "error_message": "Citation not found: '999 U.S. 9999'",
+      "normalized_citations": ["999 U.S. 9999"],
+      "start_index": 86,
+      "end_index": 99,
+      "matches": []
+    }
+  ]
+}
+```
+
+The fabricated citation comes back `NOT_FOUND` with a top-level `warning`. Per-citation `status` mirrors the API's own codes: `200` found, `300` found with multiple matching clusters (`FOUND_MULTIPLE` — a real citation, ambiguous mapping), `400` unknown reporter, `404` not found, `429` past the 250-citations-per-call cap (`NOT_CHECKED_OVER_CAP` — split the text and re-run the rest). A lookup that recognizes zero citations says so in a `note` instead of pretending to have verified anything.
 
 ## Caveats
 
 Built without a token, so:
 
 - The `case_detail` field names (cluster and opinion objects) come from the Case Law API docs plus the search-result shape, not from a live authenticated GET (the `/clusters/` and `/opinions/` endpoints return HTTP 401 without a token). The normalizer is defensive: unknown or missing values coerce to `null` (or empty arrays) rather than throwing, and citations accept either string or object form. Run `npm run smoke` with a real token to confirm these end to end.
+- The `citation_lookup` response shape (per-citation fields, the 200/300/400/404/429 status codes, the serializer-level 64,000-char text cap, the 250-citation per-request cap) comes from the CourtListener source (`cl/citations/api_views.py`, `api_serializers.py`, `cl/settings/project/citations.py`) and the Citation Lookup docs, not from a live authenticated POST (the endpoint returns HTTP 401 without a token). The normalizer is defensive like the rest. Run `npm run smoke` with a token: it checks one real citation (`410 U.S. 113`, Roe v. Wade) plus one fabricated one and fails unless the real one resolves and the fake comes back `NOT_FOUND`.
+- The clusters returned by `citation_lookup` do not include the court (in CourtListener's model the court hangs off the docket, not the cluster). For the court, follow the match's `absolute_url` or pass its `cluster_id` to `case_detail` and the `docket_id` onward. Deliberately not auto-fetched here: a 250-citation brief would fan out into hundreds of extra docket calls.
 - `docket_number` is folded into the free-text `q` term rather than sent as a dedicated field, so matching is best-effort. If a known docket number under-returns, also pass the case name in `q`.
 - `court_list` applies its `q` name filter across the full courts table, walked one page at a time server-side (the `/courts/` endpoint ignores `page_size`, so the ~3,400 courts span ~170 pages of ~20 up to a safety cap). Scope by `jurisdiction` to page less; a token is recommended for the unfiltered full-table scan.
 - `opinion_search` and `docket_lookup` return one fixed `/search/` page of ~20 results; for more, pass the response's `next_cursor` back as the `cursor` argument. The endpoint ignores `page_size`, so `limit` cannot exceed one page (it is capped at 20 rather than advertising an unreachable number).
