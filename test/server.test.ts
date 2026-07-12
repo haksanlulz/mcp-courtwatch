@@ -55,9 +55,11 @@ const SEARCH_DOCKET = {
   ],
 };
 
+// A single complete /courts/ page (next: null). Note the live /courts/ endpoint
+// paginates by ?page=N (offset), not cursor, and ignores page_size (~20/page).
 const COURTS = {
   count: 3359,
-  next: "https://www.courtlistener.com/api/rest/v4/courts/?cursor=ghi",
+  next: null,
   previous: null,
   results: [
     {
@@ -80,6 +82,33 @@ const COURTS = {
       in_use: true,
       url: "http://www.ca9.uscourts.gov/",
       start_date: "1891-06-16",
+      end_date: null,
+    },
+  ],
+};
+
+// Two-page /courts/ fixture: the sought court (nysd) lives on page 2, so a filter
+// that only reads page 1 would silently miss it. `next` uses the real ?page= form.
+const COURTS_PAGE_1 = {
+  count: 3359,
+  next: "https://www.courtlistener.com/api/rest/v4/courts/?page=2",
+  previous: null,
+  results: COURTS.results,
+};
+const COURTS_PAGE_2 = {
+  count: 3359,
+  next: null,
+  previous: "https://www.courtlistener.com/api/rest/v4/courts/?page=1",
+  results: [
+    {
+      id: "nysd",
+      full_name: "District Court, S.D. New York",
+      short_name: "S.D.N.Y.",
+      jurisdiction: "FD",
+      citation_string: "S.D.N.Y.",
+      in_use: true,
+      url: "http://www.nysd.uscourts.gov/",
+      start_date: "1789-09-24",
       end_date: null,
     },
   ],
@@ -250,6 +279,34 @@ describe("opinion_search", () => {
     expect(hit.absolute_url).toBe("https://www.courtlistener.com/opinion/9335501/miranda-v-selig/");
   });
 
+  it("forwards the cursor arg and surfaces next_cursor from the envelope's next URL", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_OPINION));
+    const body = payload(await call("opinion_search", { q: "miranda", cursor: "PAGE2CUR" }));
+    // the cursor is passed straight through to the API for the next page
+    expect(lastUrl().searchParams.get("cursor")).toBe("PAGE2CUR");
+    expect(body.query.cursor).toBe("PAGE2CUR");
+    // the fixture's `next` carries cursor=abc; that value is surfaced back out
+    expect(body.next_cursor).toBe("abc");
+  });
+
+  it("reports next_cursor as null on the last page (no next)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 1, next: null, previous: null, results: [] }));
+    const body = payload(await call("opinion_search", { q: "miranda" }));
+    expect(body.next_cursor).toBeNull();
+  });
+
+  it("advertises and enforces the true search page size (1-20, not the 50 it cannot reach)", async () => {
+    const { tools } = await client.listTools();
+    const schema = JSON.stringify(tools.find((t) => t.name === "opinion_search")!.inputSchema);
+    expect(schema).toContain("1-20");
+    expect(schema).not.toContain("1-50");
+    // Even asked for 50, one /search/ page tops out at 20 rows.
+    const results = Array.from({ length: 25 }, (_, i) => ({ caseName: `Case ${i}`, cluster_id: i }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 999, next: null, results }));
+    const body = payload(await call("opinion_search", { q: "x", limit: 50 }));
+    expect(body.returned).toBe(20);
+  });
+
   it("builds the type=o query with filters and order_by, and sends the token when set", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, results: [] }));
     await call("opinion_search", {
@@ -340,6 +397,15 @@ describe("docket_lookup", () => {
     expect(lastUrl().searchParams.get("q")).toContain("11-35405");
   });
 
+  it("forwards the cursor arg and surfaces next_cursor", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_DOCKET));
+    const body = payload(await call("docket_lookup", { q: "eviction", cursor: "DKT2" }));
+    expect(lastUrl().searchParams.get("cursor")).toBe("DKT2");
+    expect(body.query.cursor).toBe("DKT2");
+    // SEARCH_DOCKET.next carries cursor=def
+    expect(body.next_cursor).toBe("def");
+  });
+
   it("requires q or docket_number (error, no network call)", async () => {
     const res: any = await call("docket_lookup", { court: "nysd" });
     expect(res.isError).toBe(true);
@@ -358,11 +424,25 @@ describe("court_list", () => {
     expect(body.courts[0].website).toBe("http://supremecourt.gov/");
   });
 
-  it("applies the q substring filter client-side to the page", async () => {
+  it("applies the q substring filter over the fetched courts", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(COURTS));
     const body = payload(await call("court_list", { q: "ninth circuit" }));
     expect(body.returned).toBe(1);
     expect(body.courts[0].id).toBe("ca9");
+  });
+
+  it("pages through the whole courts table so the name filter is not capped at page 1", async () => {
+    // The sought court is on page 2; a single-page scan would silently miss it.
+    fetchMock.mockResolvedValueOnce(jsonResponse(COURTS_PAGE_1));
+    fetchMock.mockResolvedValueOnce(jsonResponse(COURTS_PAGE_2));
+    const body = payload(await call("court_list", { q: "s.d. new york" }));
+
+    // Both pages were fetched, and the second advanced via ?page=2 (offset paging).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[1][0] as URL).searchParams.get("page")).toBe("2");
+    // The match lived on page 2 and was still found.
+    expect(body.returned).toBe(1);
+    expect(body.courts[0].id).toBe("nysd");
   });
 });
 

@@ -43,6 +43,21 @@ const UA = "mcp-courtwatch/1.0 (+https://github.com/haksanlulz/mcp-courtwatch)";
 const THROTTLE_MS = 200;
 /** Upper bound on results returned by a single search/list tool call. */
 const MAX_RESULTS = 50;
+/**
+ * True page size of the /search/ endpoint. CourtListener v4 search paginates by
+ * cursor and returns a fixed page of ~20; it ignores page_size
+ * (/search/?...&page_size=50 still yields 20 rows). A single call
+ * therefore cannot return more than one page; more results come via next_cursor
+ * (see opinion_search / docket_lookup), not a larger limit.
+ */
+const SEARCH_PAGE_SIZE = 20;
+/**
+ * Safety cap on pages walked when scanning the full /courts/ table for a name
+ * filter. /courts/ paginates by ?page=N and also ignores page_size (~20/page),
+ * so the ~3,359 courts span ~168 pages; cap well
+ * above that so every court is reachable without an unbounded loop.
+ */
+const MAX_COURT_PAGES = 200;
 /** Cap on opinion full-text length returned by case_detail (chars). */
 const TEXT_CAP = 50000;
 
@@ -108,18 +123,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Run `fn` after all prior throttled calls, spacing each by THROTTLE_MS. */
+/**
+ * Serialize outbound calls and space each start THROTTLE_MS after the previous
+ * one settles (the gap rides the internal queue chain, not the caller's
+ * returned promise). The queue
+ * keeps flowing on both success and failure, so one error cannot wedge the chain
+ * and callers still observe their own errors on `run`.
+ */
 function throttled<T>(fn: () => Promise<T>): Promise<T> {
-  const run = queue.then(async () => {
-    const result = await fn();
-    await sleep(THROTTLE_MS);
-    return result;
-  });
-  // Keep the queue alive regardless of success/failure; swallow to avoid
-  // unhandled-rejection noise on the internal chain (callers still see errors).
+  const run = queue.then(fn, fn);
   queue = run.then(
-    () => undefined,
-    () => undefined,
+    () => sleep(THROTTLE_MS),
+    () => sleep(THROTTLE_MS),
   );
   return run;
 }
@@ -148,7 +163,7 @@ async function clGet(
     if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
 
-  const res = await throttled(() => fetch(url, { headers }));
+  const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(15_000) }));
   const text = await res.text();
 
   if (!res.ok) {
@@ -177,6 +192,27 @@ function extractResults(json: unknown): Row[] {
     return (json as Row).results as Row[];
   }
   return [];
+}
+
+/**
+ * Extract the opaque `cursor` value from a DRF envelope's `next` URL, or null
+ * when there is no next page. CourtListener's /search/ `next` looks like
+ * `.../search/?cursor=<value>&q=...`; we surface just the cursor so a caller can
+ * pass it straight back as the `cursor` argument to page forward.
+ */
+function extractCursor(next: unknown): string | null {
+  const s = str(next);
+  if (!s) return null;
+  try {
+    return new URL(s).searchParams.get("cursor");
+  } catch {
+    // `next` may arrive as a relative path; resolve it against the web host.
+    try {
+      return new URL(s, CL_WEB).searchParams.get("cursor");
+    } catch {
+      return null;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,10 +439,10 @@ function normalizeOpinionDetail(o: Row): Record<string, unknown> {
 // Input helpers
 // ---------------------------------------------------------------------------
 
-function clampLimit(v: unknown, fallback: number): number {
+function clampLimit(v: unknown, fallback: number, max: number = MAX_RESULTS): number {
   const n = num(v);
   if (n == null) return fallback;
-  return Math.max(1, Math.min(MAX_RESULTS, Math.floor(n)));
+  return Math.max(1, Math.min(max, Math.floor(n)));
 }
 
 /** Validate an optional ISO date (YYYY-MM-DD), or throw. Returns undefined when absent. */
@@ -449,7 +485,14 @@ const TOOLS: Tool[] = [
           enum: ["relevance", "newest", "oldest", "most_cited"],
           description: "Sort order (default relevance).",
         },
-        limit: { type: "integer", description: `Max results to return (1-${MAX_RESULTS}, default 20).` },
+        limit: {
+          type: "integer",
+          description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}). The /search/ endpoint returns one fixed page of ~${SEARCH_PAGE_SIZE}; to get more, pass the response's next_cursor back as cursor.`,
+        },
+        cursor: {
+          type: "string",
+          description: "Opaque pagination cursor from a previous response's next_cursor; fetches the next page (keep the other args the same).",
+        },
       },
       required: ["q"],
       additionalProperties: false,
@@ -467,7 +510,14 @@ const TOOLS: Tool[] = [
         q: { type: "string", description: "Case name or free-text query (e.g. an employer or agency name)." },
         docket_number: { type: "string", description: 'Docket number to match (e.g. "1:20-cv-03590").' },
         court: { type: "string", description: 'Optional court id filter (e.g. "nysd"). Get ids from court_list.' },
-        limit: { type: "integer", description: `Max results to return (1-${MAX_RESULTS}, default 20).` },
+        limit: {
+          type: "integer",
+          description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}). The /search/ endpoint returns one fixed page of ~${SEARCH_PAGE_SIZE}; to get more, pass the response's next_cursor back as cursor.`,
+        },
+        cursor: {
+          type: "string",
+          description: "Opaque pagination cursor from a previous response's next_cursor; fetches the next page (keep the other args the same).",
+        },
       },
       // Requires at least one of q / docket_number (enforced in the handler).
       additionalProperties: false,
@@ -539,7 +589,8 @@ const TOOLS: Tool[] = [
 async function opinionSearch(args: Row): Promise<unknown> {
   const q = str(args.q);
   if (!q) throw new Error("q is required (the search query).");
-  const limit = clampLimit(args.limit, 20);
+  // /search/ serves one fixed ~20-row page (ignores page_size); cap accordingly.
+  const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
   const court = str(args.court);
   const filedAfter = normDate(args.filed_after, "filed_after");
   const filedBefore = normDate(args.filed_before, "filed_before");
@@ -548,6 +599,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
   if (!order_by) {
     throw new Error(`order_by must be one of: ${Object.keys(ORDER_BY).join(", ")}.`);
   }
+  const cursor = str(args.cursor);
 
   const json = await clGet("/search/", {
     q,
@@ -556,6 +608,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
     filed_after: filedAfter,
     filed_before: filedBefore,
     order_by,
+    cursor: cursor ?? undefined,
   });
   const results = extractResults(json).slice(0, limit).map(normalizeOpinionHit);
   return {
@@ -565,9 +618,11 @@ async function opinionSearch(args: Row): Promise<unknown> {
       filed_after: filedAfter ?? null,
       filed_before: filedBefore ?? null,
       order_by: orderKey,
+      cursor: cursor ?? null,
     },
     total_matches: num((json as Row).count),
     returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
     results,
   };
 }
@@ -579,21 +634,43 @@ async function docketLookup(args: Row): Promise<unknown> {
   if (!q && !docketNumber) {
     throw new Error("Provide at least one of q (case name / text) or docket_number.");
   }
-  const limit = clampLimit(args.limit, 20);
+  // /search/ serves one fixed ~20-row page (ignores page_size); cap accordingly.
+  const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
+  const cursor = str(args.cursor);
   const effectiveQ = [q, docketNumber].filter(Boolean).join(" ").trim();
 
   const json = await clGet("/search/", {
     q: effectiveQ || undefined,
     type: SEARCH_TYPE_DOCKET,
     court: court ?? undefined,
+    cursor: cursor ?? undefined,
   });
   const results = extractResults(json).slice(0, limit).map(normalizeDocketHit);
   return {
-    query: { q: q ?? null, docket_number: docketNumber ?? null, court: court ?? null },
+    query: { q: q ?? null, docket_number: docketNumber ?? null, court: court ?? null, cursor: cursor ?? null },
     total_matches: num((json as Row).count),
     returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
     results,
   };
+}
+
+/**
+ * Page through /courts/ accumulating raw rows. The endpoint paginates by ?page=N
+ * and ignores page_size (~20 rows/page), so we follow
+ * the DRF `next` signal one page at a time. Stops when the API reports no next
+ * page, once at least `stopAt` rows are collected (Infinity = whole table), or at
+ * the MAX_COURT_PAGES safety cap.
+ */
+async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Promise<Row[]> {
+  const all: Row[] = [];
+  for (let page = 1; page <= MAX_COURT_PAGES; page++) {
+    const json = await clGet("/courts/", { jurisdiction: jurisdiction ?? undefined, page });
+    all.push(...extractResults(json));
+    const hasNext = str((json as Row).next) != null;
+    if (!hasNext || all.length >= stopAt) break;
+  }
+  return all;
 }
 
 async function courtList(args: Row): Promise<unknown> {
@@ -601,14 +678,12 @@ async function courtList(args: Row): Promise<unknown> {
   const nameFilter = str(args.q)?.toLowerCase() ?? null;
   const limit = clampLimit(args.limit, 25);
 
-  // When filtering by name client-side, pull a larger page to search within.
-  const pageSize = nameFilter ? 100 : Math.min(100, limit);
-  const json = await clGet("/courts/", {
-    jurisdiction: jurisdiction ?? undefined,
-    page_size: pageSize,
-  });
+  // With a name filter we must scan the whole table (server ignores page_size),
+  // or common courts past the first page are silently missed. Without one, we
+  // only need enough pages to satisfy `limit`.
+  const rows = await fetchCourts(jurisdiction ?? undefined, nameFilter ? Infinity : limit);
 
-  let courts = extractResults(json).map(normalizeCourt);
+  let courts = rows.map(normalizeCourt);
   if (nameFilter) {
     courts = courts.filter((c) =>
       [c.id, c.full_name, c.short_name, c.citation_string].some(
@@ -621,7 +696,7 @@ async function courtList(args: Row): Promise<unknown> {
     query: { jurisdiction: jurisdiction ?? null, q: str(args.q) ?? null },
     returned: courts.length,
     note: nameFilter
-      ? "The q filter is applied client-side to the fetched page; narrow by jurisdiction if a court is missing."
+      ? "The q filter is applied across the full courts table, paged server-side; scope by jurisdiction to page less."
       : undefined,
     courts,
   };

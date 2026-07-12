@@ -8,9 +8,9 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `opinion_search` | `q` (required), `court`, `filed_after`, `filed_before`, `order_by`, `limit` | Full-text case-law search (`/search/?type=o`). Per hit: case name, court, date filed, citations, docket number, snippet, citation count, cluster id, link. |
-| `docket_lookup` | `q` and/or `docket_number` (at least one), `court`, `limit` | Docket search (`/search/?type=r`). Per hit: case name, court, docket number, filed/terminated dates, nature of suit, docket id, link. |
-| `court_list` | `jurisdiction`, `q`, `limit` | Courts and their ids (`/courts/`), the values used as the `court` filter above. Optional jurisdiction filter and client-side name substring filter. |
+| `opinion_search` | `q` (required), `court`, `filed_after`, `filed_before`, `order_by`, `limit`, `cursor` | Full-text case-law search (`/search/?type=o`). Per hit: case name, court, date filed, citations, docket number, snippet, citation count, cluster id, link. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
+| `docket_lookup` | `q` and/or `docket_number` (at least one), `court`, `limit`, `cursor` | Docket search (`/search/?type=r`). Per hit: case name, court, docket number, filed/terminated dates, nature of suit, docket id, link. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
+| `court_list` | `jurisdiction`, `q`, `limit` | Courts and their ids (`/courts/`), the values used as the `court` filter above. Optional jurisdiction filter and a name substring filter applied across the full courts table (paged server-side). |
 | `case_detail` | `id` (required), `type` (`cluster` or `opinion`) | Full case by id. A cluster (`/clusters/{id}/`) gives case name, citations, date, judges, and its opinion ids. An opinion (`/opinions/{id}/`) gives the full opinion text. Requires a token. |
 | `judge_lookup` | `name_last` and/or `name_first` (at least one), `limit` | Judges / people (`/people/`). Per person: id, assembled name, birth and death dates and place, gender, count of positions on file. |
 
@@ -20,7 +20,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 
 - Base URL: `https://www.courtlistener.com/api/rest/v4`
 - Auth: a free API token, sent as the header `Authorization: Token <token>`.
-- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }` with cursor pagination. Detail endpoints return a bare object.
+- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` paginates by opaque `cursor`; the list endpoints (`/courts/`, `/people/`) paginate by page number (`?page=N`). Detail endpoints return a bare object.
 - Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/` and `/opinions/{id}/` return HTTP 401 without a token, so `case_detail` requires one.
 
 Sources:
@@ -123,9 +123,9 @@ Built without a token, so:
 
 - The `case_detail` field names (cluster and opinion objects) come from the Case Law API docs plus the search-result shape, not from a live authenticated GET (the `/clusters/` and `/opinions/` endpoints return HTTP 401 without a token). The normalizer is defensive: unknown or missing values coerce to `null` (or empty arrays) rather than throwing, and citations accept either string or object form. Run `npm run smoke` with a real token to confirm these end to end.
 - `docket_number` is folded into the free-text `q` term rather than sent as a dedicated field, so matching is best-effort. If a known docket number under-returns, also pass the case name in `q`.
-- `court_list` applies its `q` name filter client-side to the fetched page. Narrow by `jurisdiction` if an expected court is missing from the page.
-- `opinion_search` and `docket_lookup` return the first page of results (up to `limit`); deep pagination via the cursor is not exposed. Refine the query to narrow instead.
-- The `order_by` values, the `court` / `filed_after` / `filed_before` filters, and the search / courts / people field names match the live API. The token-gated behavior of `case_detail` is the main thing the keyed smoke should confirm.
+- `court_list` applies its `q` name filter across the full courts table, walked one page at a time server-side (the `/courts/` endpoint ignores `page_size`, so the ~3,400 courts span ~170 pages of ~20 up to a safety cap). Scope by `jurisdiction` to page less; a token is recommended for the unfiltered full-table scan.
+- `opinion_search` and `docket_lookup` return one fixed `/search/` page of ~20 results; for more, pass the response's `next_cursor` back as the `cursor` argument. The endpoint ignores `page_size`, so `limit` cannot exceed one page (it is capped at 20 rather than advertising an unreachable number).
+- The `order_by` values, the `court` / `filed_after` / `filed_before` filters, and the search / courts / people field names match the live API, as does the fixed ~20-row page size of `/search/` and `/courts/` (both ignore `page_size`). The token-gated behavior of `case_detail` is the main thing the keyed smoke should confirm.
 
 ## Develop
 

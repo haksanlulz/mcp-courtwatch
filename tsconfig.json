@@ -11,5 +11,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["index.ts", "server.ts", "smoke.ts", "test/**/*.ts"]
+  "include": ["*.ts", "test/**/*.ts"]
 }
