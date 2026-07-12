@@ -1,0 +1,46 @@
+{
+  "name": "mcp-courtwatch",
+  "version": "1.0.0",
+  "description": "MCP server over CourtListener (Free Law Project) for free U.S. case-law and court-docket search, built for legal aid, tenant defense, pro-se litigants, and public-interest lawyers.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Abishai James",
+  "bin": {
+    "mcp-courtwatch": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "server.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "tsx index.ts",
+    "test": "vitest run",
+    "smoke": "tsx smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "courtlistener",
+    "free-law-project",
+    "case-law",
+    "court-dockets",
+    "legal-aid",
+    "pro-se",
+    "civic-data"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
