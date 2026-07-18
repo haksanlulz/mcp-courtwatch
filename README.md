@@ -2,7 +2,7 @@
 
 MCP server for free U.S. case-law and court-docket search, over [CourtListener](https://www.courtlistener.com/) (the [Free Law Project](https://free.law/)'s open legal database). Built for legal-aid orgs, tenant-defense and pro-se litigants, and public-interest lawyers who cannot afford Westlaw or PACER.
 
-It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dateFiled`, `cluster_id`, `docket_absolute_url`, and so on) into clean, documented tool outputs.
+It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dateFiled`, `cluster_id`, `docket_absolute_url`, and so on) rather than passing the envelope through — see the field map below.
 
 ## Tools
 
@@ -21,7 +21,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 
 - Base URL: `https://www.courtlistener.com/api/rest/v4`
 - Auth: a free API token, sent as the header `Authorization: Token <token>`.
-- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` paginates by opaque `cursor`; the list endpoints (`/courts/`, `/people/`) paginate by page number (`?page=N`). Detail endpoints return a bare object. `POST /citation-lookup/` returns a bare JSON array (one item per citation recognized in the text).
+- Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` and `/people/` paginate by opaque `cursor`; `/courts/` paginates by page number (`?page=N`). Detail endpoints return a bare object. `POST /citation-lookup/` returns a bare JSON array (one item per citation recognized in the text).
 - Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/`, `/opinions/{id}/`, and `POST /citation-lookup/` return HTTP 401 without a token, so `case_detail` and `citation_lookup` require one.
 - Citation-lookup limits (server-side): `text` max 64,000 characters (enforced pre-flight here with a clear error; the tool never truncates, since a dropped tail would mean unchecked citations); the first 250 citations per call are looked up and any beyond that come back flagged per-item as not checked; rate limit 60 citations/min.
 
@@ -37,7 +37,7 @@ Sources:
 
 | CourtListener field | Normalized field | Where |
 |---------------------|------------------|-------|
-| `caseName` (fallback `caseNameFull`) | `case_name` | opinion_search, docket_lookup |
+| `caseName` (fallback: `caseNameFull` on opinion hits, `case_name_full` on docket hits) | `case_name` | opinion_search, docket_lookup |
 | `court_id`, `court` | `court_id`, `court` | search hits |
 | `dateFiled` | `date_filed` | search hits |
 | `citation` (array) | `citations` | opinion_search |
@@ -95,39 +95,40 @@ Point your MCP client at `index.ts` via tsx. Use an absolute path.
 
 ## Example
 
-Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "order_by": "most_cited", "limit": 1 }`:
+Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "order_by": "most_cited", "limit": 1 }` (output captured live, 2026-07; counts drift as CourtListener grows):
 
 ```json
 {
-  "query": { "q": "warrantless search", "court": "scotus", "filed_after": null, "filed_before": null, "order_by": "most_cited" },
-  "total_matches": 161,
+  "query": { "q": "warrantless search", "court": "scotus", "filed_after": null, "filed_before": null, "order_by": "most_cited", "cursor": null },
+  "total_matches": 282,
   "returned": 1,
+  "next_cursor": "cz01MTI3JnM9MTA5NjkzJnQ9byZkPTIwMjYtMDctMTcmcD0y",
   "results": [
     {
-      "case_name": "Illinois v. Gates",
+      "case_name": "Monell v. New York City Dept. of Social Servs.",
       "court": "Supreme Court of the United States",
       "court_id": "scotus",
-      "date_filed": "1983-06-08",
-      "citations": ["76 L. Ed. 2d 527", "103 S. Ct. 2317", "462 U.S. 213", "1983 U.S. LEXIS 54", "51 U.S.L.W. 4709"],
-      "docket_number": "81-430",
-      "cite_count": 16741,
+      "date_filed": "1978-06-06",
+      "citations": ["56 L. Ed. 2d 611", "98 S. Ct. 2018", "436 U.S. 658", "1978 U.S. LEXIS 100", "16 Empl. Prac. Dec. (CCH) 8345", "17 Fair Empl. Prac. Cas. (BNA) 873"],
+      "docket_number": "75-1914",
+      "cite_count": 42298,
       "status": "Published",
-      "snippet": "Justice White, concurring in the judgment. In my view, the question regarding modification of the exclusionary rule ...",
-      "cluster_id": 110959,
-      "docket_id": 638808,
-      "absolute_url": "https://www.courtlistener.com/opinion/110959/illinois-v-gates/"
+      "snippet": "436 U.S. 658 (1978)\nMONELL ET AL.\nv.\nDEPARTMENT OF SOCIAL SERVICES OF THE CITY OF NEW YORK ET AL.\nNo. 75-1914.\nSupreme Court of the United States. ...",
+      "cluster_id": 109881,
+      "docket_id": 266243,
+      "absolute_url": "https://www.courtlistener.com/opinion/109881/monell-v-new-york-city-dept-of-social-servs/"
     }
   ]
 }
 ```
 
-Then pass the `cluster_id` to `case_detail` (`{ "id": 110959 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text.
+Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text. For the next page, pass `next_cursor` back as `cursor`.
 
 ## Example: verifying citations before filing
 
-Courts have sanctioned filings built on citations that do not exist. A legal-aid worker or a pro-se litigant can run a draft's citations through `citation_lookup` before anything reaches a judge:
+Courts have sanctioned filings built on citations that do not exist. Run a draft's citations through `citation_lookup` before filing.
 
-Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. Wade, 410 U.S. 113 (1973); Smith v. Imaginary, 999 U.S. 9999 (2099)." }`:
+Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. Wade, 410 U.S. 113 (1973); Smith v. Imaginary, 999 U.S. 9999 (2099)." }`. This endpoint requires a token this repo was built without, so unlike the example above the output here is constructed from the documented response shape, not captured from a live call (see Caveats):
 
 ```json
 {
@@ -199,6 +200,10 @@ npm test         # vitest, fetch mocked with the documented response shapes (no 
 npm run smoke    # one live call per tool (needs COURTLISTENER_API_TOKEN; skips cleanly without)
 npm run typecheck
 ```
+
+## AI assistance
+
+This project was built with AI assistance (Claude). Correctness was established by the test suite and typecheck (`npm test`, `npm run typecheck`): every tool is driven through a real MCP client over an in-memory transport with `fetch` stubbed to the documented CourtListener response shapes, and the unauthenticated search / courts / people surfaces were additionally checked against the live API. The token-gated endpoints are verified only to the extent the Caveats state, with `npm run smoke` as the live confirmation path. The author is accountable for what ships here.
 
 ## License
 
