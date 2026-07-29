@@ -1,5 +1,5 @@
 {
-  "name": "mcp-courtwatch",
+  "name": "@haksanlulz/mcp-courtwatch",
   "version": "1.0.0",
   "description": "MCP server over CourtListener (Free Law Project) for free U.S. case-law and court-docket search, built for legal aid, tenant defense, pro-se litigants, and public-interest lawyers.",
   "type": "module",
@@ -13,10 +13,13 @@
     "node": ">=18"
   },
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test",
+    "smoke": "tsx smoke.ts",
     "start": "tsx index.ts",
     "test": "vitest run",
-    "smoke": "tsx smoke.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:pack": "node scripts/pack-probe.mjs"
   },
   "keywords": [
     "mcp",
@@ -37,5 +40,15 @@
     "tsx": "^4.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-courtwatch": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

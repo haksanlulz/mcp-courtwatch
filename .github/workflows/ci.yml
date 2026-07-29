@@ -1,0 +1,44 @@
+name: CI
+
+# The "a stranger clones this and runs npm test" channel. Until 2026-07-29 that
+# channel was verified on exactly one machine — the author's — which is not a
+# channel, it is a habit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  # The artifact rung. A green suite is not evidence the published package
+  # starts: on 2026-07-29 this repo had both, and the installed binary died on
+  # launch because npm's bin shim could not honour a `npx tsx` shebang.
+  # pack-probe packs the real tarball, installs it into a throwaway project with
+  # no source on disk, and speaks MCP to the binary through its bin shim.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:pack
