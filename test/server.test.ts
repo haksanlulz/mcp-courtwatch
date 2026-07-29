@@ -623,6 +623,11 @@ describe("citation_lookup", () => {
     const init = lastInit();
     expect(init.method).toBe("POST");
     expect(init.headers["Content-Type"]).toBe("application/json");
+    // CourtListener is a free public service run by a non-profit: identify
+    // ourselves on every call, POST included. A missing UA is invisible to
+    // every other assertion here — that is how the sibling wagewatch server
+    // shipped without one until 2026-07-29.
+    expect(init.headers["User-Agent"]).toMatch(/^mcp-courtwatch\/\d/);
     expect(JSON.parse(init.body!)).toEqual({ text });
 
     // Summary counts: one real, one fake, verified never claimed overall.
