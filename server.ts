@@ -941,6 +941,34 @@ const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
 // Server factory
 // ---------------------------------------------------------------------------
 
+/**
+ * SPEC records-not-advice.
+ *
+ * The consumer of this server is a model, and the reader downstream of that
+ * model is often a pro-se litigant or an overworked legal-aid worker. Court
+ * records are exactly the kind of raw material a reader converts into a
+ * decision. Every successful result therefore carries its own framing, in the
+ * payload rather than in the tool description — the model sees the payload
+ * when it composes an answer; it may not still be holding the description.
+ *
+ * Docket entries in particular record what was FILED, not what was decided.
+ */
+const DISCLAIMER =
+  "Raw public court records from CourtListener, reproduced as published. " +
+  "This is not legal advice and is not a substitute for a lawyer. Docket " +
+  "entries record filings, not rulings; the absence of a record is not " +
+  "evidence that nothing happened.";
+
+function withDisclaimer(result: unknown): unknown {
+  // Only object results can carry the key. Nothing here returns a bare scalar
+  // today, but a future tool that does must not silently drop the framing.
+  if (result === null || typeof result !== "object") {
+    return { result, disclaimer: DISCLAIMER };
+  }
+  if (Array.isArray(result)) return { results: result, disclaimer: DISCLAIMER };
+  return { ...(result as Record<string, unknown>), disclaimer: DISCLAIMER };
+}
+
 export function createServer(): Server {
   const server = new Server(
     { name: "mcp-courtwatch", version: "1.0.0" },
@@ -957,7 +985,7 @@ export function createServer(): Server {
     }
     try {
       const result = await handler((args ?? {}) as Row);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(withDisclaimer(result), null, 2) }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {

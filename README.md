@@ -121,9 +121,14 @@ Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "ord
       "docket_id": 266243,
       "absolute_url": "https://www.courtlistener.com/opinion/109881/monell-v-new-york-city-dept-of-social-servs/"
     }
-  ]
+  ],
+  "disclaimer": "Raw public court records from CourtListener, reproduced as published. This is not legal advice and is not a substitute for a lawyer. Docket entries record filings, not rulings; the absence of a record is not evidence that nothing happened."
 }
 ```
+
+The `disclaimer` is attached to every response, in the payload rather than only
+in the tool description — a model composing an answer has the payload in hand
+and may no longer be holding the description.
 
 Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text. For the next page, pass `next_cursor` back as `cursor`.
 
@@ -178,7 +183,8 @@ Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. W
       "end_index": 99,
       "matches": []
     }
-  ]
+  ],
+  "disclaimer": "Raw public court records from CourtListener, reproduced as published. This is not legal advice and is not a substitute for a lawyer. Docket entries record filings, not rulings; the absence of a record is not evidence that nothing happened."
 }
 ```
 

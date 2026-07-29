@@ -16,8 +16,14 @@ precedent: `mcp-scryfall/GAUNTLET.md`.
   identifies itself.
 - **Non-goals**: legal advice, predicting rulings, anything that asserts a citation is good without checking it.
 
-⚠️ **§1 is transcribed from the README, not elicited from the operator.** Treat
-the clauses above as inferred until he ratifies or rewrites them.
+- **MUST NEVER** (operator, 2026-07-29): *"It's treated as legal advice."* The
+  reader downstream of the model is often a pro-se litigant or an overworked
+  legal-aid worker, and court records are exactly the raw material a person
+  converts into a decision. Output stays records-only, and says so in the
+  payload. Locked by SPEC `records-not-advice`.
+
+⚠️ The three bullets above the MUST NEVER line are still transcribed from the
+README rather than elicited; the MUST NEVER clause is operator-authored.
 
 ## §2 Channel map
 
@@ -41,6 +47,7 @@ the clauses above as inferred until he ratifies or rewrites them.
 | Every request identifies itself to CourtListener | vitest asserts `User-Agent` matches `^mcp-courtwatch/\d` | ✅ **added 2026-07-29, mutation-probed red** |
 | Token never enters the query string | vitest asserts header-only auth | ✅ present |
 | Published tarball ships no tests/tooling | `files` whitelist + `npm pack --dry-run` | ✅ **added 2026-07-29** — `files: ["dist"]`; `verify:pack` fails if any source, test or tsconfig appears in the tarball |
+| Every result is framed records-only (SPEC `records-not-advice`) | vitest, asserted across multiple tools so a tool added outside the shared envelope is caught | ✅ **added 2026-07-29**, written RED first |
 
 ## §4 Ladder
 
@@ -58,8 +65,25 @@ The npm channel itself is covered by `verify:pack`, which CI runs on every push.
 
 ## §5 Acceptance specs
 
-*(Operator-owned. None authored yet — this section is deliberately empty rather
-than seeded with my guesses. The §1 clauses above are the natural first three.)*
+### SPEC records-not-advice
+```
+Given any successful tool call
+When the result is returned to a model
+Then it carries an explicit records-only framing
+```
+The framing rides the **payload**, not the tool description. The model has the
+payload in hand at the moment it writes the sentence a person actually reads;
+it may no longer be holding the description. The text also carries the docket
+caveat — entries record what was filed, not what was decided — and states that
+the absence of a record is not evidence that nothing happened.
+
+Check: `test/server.test.ts` (tagged `spec: records-not-advice`), asserted
+across multiple tools rather than one, so a new tool added outside the shared
+envelope is caught.
+**Red-capable:** written RED first; failed before `withDisclaimer` existed
+(2026-07-29).
+
+*Slots 2 and 3 are open and operator-owned.*
 
 ## §6 Escape log
 
@@ -101,8 +125,10 @@ to return a negative is not evidence** (workspace Audit Discipline Rules 22/23).
 1. **README-as-artifact.** It is what LobeHub and Glama render, and it still documents the
    old clone-and-point-tsx-at-it install. Nothing checks the documented path executes, and
    the published package now supports a shorter one. **Highest-value remaining item.**
-2. **§5 is empty** — no operator-authored acceptance specs anywhere in the set. §1 is also
-   transcribed rather than elicited, so both operator-owned sections are unratified.
+2. **§5 holds one spec of a planned three** — the operator's stated MUST-NEVER for this
+   server is authored, implemented and linked (2026-07-29). Slots 2 and 3 are open. §1's
+   descriptive bullets are still transcribed from the README rather than elicited; only the
+   MUST NEVER clause is in his words.
 3. **vitest version drift** — fairrent 2.1.9, the siblings 4.1.10, for no recorded reason.
 4. **`smoke` is in-memory, not stdio.** `verify:pack` now covers the real-stdio channel, so
    smoke's remaining job is the live upstream contract. Its name oversells it.

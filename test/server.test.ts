@@ -752,3 +752,27 @@ describe("unknown tool", () => {
     await expect(call("does_not_exist", {})).rejects.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// SPEC records-not-advice — operator-authored 2026-07-29
+// ---------------------------------------------------------------------------
+
+describe("SPEC records-not-advice", () => {
+  // spec: records-not-advice
+  // Given any successful tool call
+  // When the result is returned to a model
+  // Then it carries an explicit records-only framing, so an overworked legal-aid
+  //      worker or pro-se litigant cannot read the output as guidance.
+  // Operator's stated worst failure for this server: "it's treated as legal advice."
+  it("every successful tool result carries the records-only framing", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ count: 0, results: [] }));
+    for (const [tool, args] of [
+      ["opinion_search", { q: "test" }],
+      ["court_list", {}],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const body = payload(await call(tool, args));
+      expect(body, `${tool} must carry the disclaimer`).toHaveProperty("disclaimer");
+      expect(String(body.disclaimer).toLowerCase()).toContain("not legal advice");
+    }
+  });
+});
