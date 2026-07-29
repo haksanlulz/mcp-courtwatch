@@ -56,13 +56,32 @@ Sources:
 
 ## Install
 
-No build step. Runs directly on [tsx](https://github.com/privatenumber/tsx).
+Nothing to clone. Point your MCP client at it and npm fetches it on first run:
 
+```json
+{
+  "mcpServers": {
+    "courtwatch": {
+      "command": "npx",
+      "args": ["-y", "@haksanlulz/mcp-courtwatch"],
+      "env": { "COURTLISTENER_API_TOKEN": "your-courtlistener-token" }
+    }
+  }
+}
 ```
-git clone https://github.com/haksanlulz/mcp-courtwatch.git
+
+<details>
+<summary>From source (contributors)</summary>
+
+```bash
+git clone https://github.com/haksanlulz/mcp-courtwatch
 cd mcp-courtwatch
 npm install
+npm run build     # emits dist/; the published bin is dist/index.js
 ```
+
+`npm start` runs the TypeScript directly via [`tsx`](https://github.com/privatenumber/tsx) without building.
+</details>
 
 ## API token
 
@@ -76,22 +95,6 @@ setx COURTLISTENER_API_TOKEN your-token-here      # Windows (new shells)
 ```
 
 Without the token, `opinion_search`, `docket_lookup`, `court_list`, and `judge_lookup` still work at CourtListener's unauthenticated rate limit. `case_detail` and `citation_lookup` return a clear error telling you to set the token. The token is never logged.
-
-## MCP client config
-
-Point your MCP client at `index.ts` via tsx. Use an absolute path.
-
-```json
-{
-  "mcpServers": {
-    "courtwatch": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/mcp-courtwatch/index.ts"],
-      "env": { "COURTLISTENER_API_TOKEN": "your-token-here" }
-    }
-  }
-}
-```
 
 ## Example
 
