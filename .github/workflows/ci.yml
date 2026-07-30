@@ -32,30 +32,54 @@ jobs:
       - run: npm run build
       - run: npm test
 
-  # The artifact rung. A green suite is not evidence the published package
-  # starts: on 2026-07-29 this repo had both, and the installed binary died on
-  # launch because npm's bin shim could not honour a `npx tsx` shebang.
-  # pack-probe packs the real tarball, installs it into a throwaway project with
-  # no source on disk, and speaks MCP to the binary through its bin shim.
+  # The artifact rung, in TWO STAGES.
+  #
+  # Stage 1 builds and packs on a Node the toolchain can actually run, and
+  # uploads the tarball. Stage 2 downloads it and consumes it on every Node a
+  # user might have, INCLUDING ones that cannot build here: vitest 4 pulls
+  # vite 8 (Node ^20.19 || >=22.12), so `npm ci` dies on 18 — but the shipped
+  # tarball is only dist/ plus the MCP SDK. A single-stage job conflated the
+  # toolchain's floor with the package's and could only ever test the former.
+  #
+  # This is what turns the engines field from a support statement into a
+  # measurement.
   package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:pack
+      - run: npm pack --silent > .tgzname
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: "*.tgz"
+          retention-days: 1
+
+  # Stage 2: what a stranger actually does — install the published tarball and
+  # speak MCP to it. Node 18 is here and nowhere else, because this is the only
+  # stage that does not need the dev toolchain.
+  consume:
+    needs: package
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 18 was tried here and cannot work: this job runs `npm ci` first, which
-        # installs the FULL dev tree (vitest 4 -> vite 8, Node ^20.19 || >=22.12),
-        # so it dies before ever reaching the tarball. A real consumer never runs
-        # `npm ci` in this repo, so proving the package on 18 needs a two-stage
-        # job -- build and pack on 20, then install and run the artifact on 18.
-        # Not built. Until it is, THE PACKAGE'S TRUE NODE FLOOR IS UNMEASURED and
-        # no `engines` field is declared, because guessing one is worse than
-        # silence. Recorded in GAUNTLET.md.
-        node: ["20", "22"]
+        node: ["18", "20", "22"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run verify:pack
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+      - name: consume the published tarball
+        run: |
+          tgz=$(ls *.tgz | head -1)
+          echo "consuming $tgz on node $(node -v)"
+          PACK_PROBE_TARBALL="$PWD/$tgz" node scripts/pack-probe.mjs

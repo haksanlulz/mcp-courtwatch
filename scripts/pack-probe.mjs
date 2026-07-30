@@ -16,7 +16,7 @@
  * Run: npm run verify:pack
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -27,11 +27,25 @@ const ok = (m) => console.log(`  ok  ${m}`);
 
 console.log(`pack-probe: ${pkg.name}@${pkg.version}`);
 
+// CONSUME-ONLY MODE. With PACK_PROBE_TARBALL set, skip build+pack and exercise a
+// tarball someone else produced. This exists so the published package can be
+// tested on a Node the BUILD cannot run on: vitest 4 pulls vite 8 (Node
+// ^20.19 || >=22.12), so `npm ci` dies on 18 -- but the shipped tarball is only
+// dist/ plus the MCP SDK and may well run there. A single-stage probe conflated
+// the toolchain's floor with the package's, and asserting a floor nobody has
+// measured is exactly what this repo keeps catching elsewhere.
+const provided = process.env.PACK_PROBE_TARBALL;
+let tgz;
+if (provided) {
+  if (!existsSync(provided)) fail(`PACK_PROBE_TARBALL does not exist: ${provided}`);
+  tgz = resolve(provided);
+  ok(`consuming prebuilt tarball on node ${process.version}`);
+} else {
 // --- 1. build + pack -------------------------------------------------------
 if (spawnSync("npm", ["run", "build"], { cwd: repo, shell: true }).status !== 0) fail("build");
 const packed = spawnSync("npm", ["pack", "--silent"], { cwd: repo, shell: true, encoding: "utf8" });
 if (packed.status !== 0) fail("npm pack");
-const tgz = packed.stdout.trim().split("\n").pop().trim();
+  tgz = packed.stdout.trim().split("\n").pop().trim();
 ok(`packed ${tgz}`);
 
 // The tarball must not carry sources, tests or tooling.
@@ -40,12 +54,13 @@ const files = JSON.parse(listing.stdout)[0].files.map((f) => f.path);
 const leaked = files.filter((f) => /^(test|smoke|tsconfig|\.env|server\.ts|index\.ts)/.test(f));
 if (leaked.length) fail(`tarball leaks non-shippable files: ${leaked.join(", ")}`);
 ok(`tarball is ${files.length} files, no sources or tests`);
+}
 
 // --- 2. install cold, no clone --------------------------------------------
 const dir = mkdtempSync(join(tmpdir(), "packprobe-"));
 try {
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "packprobe", version: "1.0.0", private: true }));
-  const inst = spawnSync("npm", ["install", "--silent", join(repo, tgz)], { cwd: dir, shell: true, encoding: "utf8" });
+  const inst = spawnSync("npm", ["install", "--silent", provided ? tgz : join(repo, tgz)], { cwd: dir, shell: true, encoding: "utf8" });
   if (inst.status !== 0) fail(`cold install failed: ${inst.stderr?.slice(0, 400)}`);
   ok("installed into a clean project");
 
@@ -93,5 +108,6 @@ try {
   // Teardown is best-effort and must never decide the verdict: an EBUSY on a
   // temp directory is not a failure of the artifact under test.
   try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* leave it to the OS */ }
-  try { rmSync(join(repo, tgz ?? ""), { force: true }); } catch { /* ignore */ }
+  // Only remove a tarball WE created; in consume mode it belongs to the caller.
+  if (!provided) { try { rmSync(join(repo, tgz ?? ""), { force: true }); } catch { /* ignore */ } }
 }
