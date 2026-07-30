@@ -10,7 +10,7 @@
     "url": "git+https://github.com/haksanlulz/mcp-courtwatch.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsc",
