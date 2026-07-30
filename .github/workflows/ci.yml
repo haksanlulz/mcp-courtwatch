@@ -42,10 +42,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The consumer channel, tested on the OLDEST Node anyone might still be
-        # running. This is the honest place for 18: a stranger installing the
-        # published tarball never touches vitest.
-        node: ["18", "20", "22"]
+        # 18 was tried here and cannot work: this job runs `npm ci` first, which
+        # installs the FULL dev tree (vitest 4 -> vite 8, Node ^20.19 || >=22.12),
+        # so it dies before ever reaching the tarball. A real consumer never runs
+        # `npm ci` in this repo, so proving the package on 18 needs a two-stage
+        # job -- build and pack on 20, then install and run the artifact on 18.
+        # Not built. Until it is, THE PACKAGE'S TRUE NODE FLOOR IS UNMEASURED and
+        # no `engines` field is declared, because guessing one is worse than
+        # silence. Recorded in GAUNTLET.md.
+        node: ["20", "22"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
