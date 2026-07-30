@@ -18,9 +18,15 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repo = resolve(import.meta.dirname, "..");
+// fileURLToPath, not import.meta.dirname: the latter is Node 20.11+ and is
+// `undefined` on 18, where resolve() then throws ERR_INVALID_ARG_TYPE before
+// this script reaches the tarball at all. That made consume(18) fail on the
+// PROBE and read as "the package does not support Node 18" — a measurement
+// about the instrument, not the artifact (2026-07-30).
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
 const fail = (m) => { console.error(`FAIL: ${m}`); process.exit(1); };
 const ok = (m) => console.log(`  ok  ${m}`);
