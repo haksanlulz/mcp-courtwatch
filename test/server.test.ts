@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createServer } from "../server.js";
+import { createServer, __test } from "../server.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures: CourtListener v4 response shapes, field names as the live API
@@ -324,6 +324,7 @@ beforeEach(async () => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   process.env.COURTLISTENER_API_TOKEN = "test-token";
+  __test.resetCourtCache(); // the court-table cache is a module singleton
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const server = createServer();
@@ -342,15 +343,19 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("tool registration", () => {
-  it("lists exactly the six documented tools", async () => {
+  it("lists exactly the ten documented tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "case_authorities",
       "case_detail",
       "citation_lookup",
+      "cited_by",
       "court_list",
+      "docket_entries",
       "docket_lookup",
       "judge_lookup",
       "opinion_search",
+      "oral_arguments",
     ]);
     for (const t of tools) {
       expect(t.inputSchema.type).toBe("object");
@@ -774,5 +779,192 @@ describe("SPEC records-not-advice", () => {
       expect(body, `${tool} must carry the disclaimer`).toHaveProperty("disclaimer");
       expect(String(body.disclaimer).toLowerCase()).toContain("not legal advice");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1.1.0 tools: cited_by, case_authorities, docket_entries, oral_arguments
+// ---------------------------------------------------------------------------
+
+describe("cited_by", () => {
+  it("searches with the cites:() fielded operator, type=o", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 470,
+        next: "https://www.courtlistener.com/api/rest/v4/search/?cursor=abc&q=cites%3A(2812209)",
+        results: [
+          {
+            caseName: "Mirabelli v. Bonta",
+            court: "S.D. California",
+            court_id: "casd",
+            dateFiled: "2025-01-01",
+            citation: [],
+            cluster_id: 999,
+            absolute_url: "/opinion/999/mirabelli/",
+          },
+        ],
+      }),
+    );
+    const body = payload(await call("cited_by", { opinion_id: 2812209 }));
+    expect(lastUrl().searchParams.get("q")).toBe("cites:(2812209)");
+    expect(lastUrl().searchParams.get("type")).toBe("o");
+    expect(lastUrl().searchParams.get("order_by")).toBe("dateFiled desc"); // default newest
+    expect(body.total_citing).toBe(470);
+    expect(body.next_cursor).toBe("abc");
+    expect(body.results[0].case_name).toBe("Mirabelli v. Bonta");
+    expect(String(body.note)).toContain("treatment");
+  });
+
+  it("rejects a non-integer opinion id before any network call", async () => {
+    const res = await call("cited_by", { opinion_id: "not-a-number" });
+    expect((res as any).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("case_authorities", () => {
+  it("hits /opinions-cited/ with citing_opinion and normalizes URL pairs", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 2,
+        next: null,
+        results: [
+          {
+            citing_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/2812209/",
+            cited_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/108713/",
+            depth: 7,
+          },
+          {
+            citing_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/2812209/",
+            cited_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/96405/",
+            depth: 1,
+          },
+        ],
+      }),
+    );
+    const body = payload(await call("case_authorities", { opinion_id: 2812209 }));
+    expect(lastUrl().pathname).toContain("/opinions-cited/");
+    expect(lastUrl().searchParams.get("citing_opinion")).toBe("2812209");
+    expect(body.results[0].cited_opinion_id).toBe(108713);
+    expect(body.results[0].depth).toBe(7);
+    expect(body.total_authorities).toBe(2);
+  });
+
+  it("throws the token setup error pre-flight when unset", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    const res = await call("case_authorities", { opinion_id: 5 });
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("docket_entries", () => {
+  it("lists entries with nested RECAP documents and the coverage note", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 42,
+        next: "https://www.courtlistener.com/api/rest/v4/docket-entries/?cursor=xyz",
+        results: [
+          {
+            id: 1,
+            entry_number: 12,
+            date_filed: "2024-05-01",
+            description: "MOTION to Dismiss",
+            recap_documents: [
+              {
+                id: 900,
+                document_number: "12",
+                description: "Memorandum of Law",
+                page_count: 25,
+                is_available: true,
+                absolute_url: "/docket/65745614/12/",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const body = payload(await call("docket_entries", { docket_id: 65745614 }));
+    expect(lastUrl().pathname).toContain("/docket-entries/");
+    expect(lastUrl().searchParams.get("docket_id")).toBe("65745614");
+    expect(body.total_entries).toBe(42);
+    expect(body.next_cursor).toBe("xyz");
+    expect(body.results[0].entry_number).toBe(12);
+    expect(body.results[0].recap_documents[0].page_count).toBe(25);
+    expect(String(body.note)).toContain("PACER");
+    expect(String(body.note)).toContain("FILED");
+  });
+
+  it("requires a token pre-flight", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    const res = await call("docket_entries", { docket_id: 5 });
+    expect((res as any).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("oral_arguments", () => {
+  it("searches type=oa and normalizes the audio fields", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 2175,
+        next: null,
+        results: [
+          {
+            caseName: "Miranda v. Arizona",
+            court: "Supreme Court of the United States",
+            court_id: "scotus",
+            docketNumber: "759",
+            dateArgued: "1966-02-28",
+            judge: "Warren",
+            duration: 3600,
+            id: 555,
+            docket_id: 777,
+            download_url: "https://example.com/audio.mp3",
+            absolute_url: "/audio/555/miranda/",
+          },
+        ],
+      }),
+    );
+    const body = payload(await call("oral_arguments", { q: "miranda", court: "scotus" }));
+    expect(lastUrl().searchParams.get("type")).toBe("oa");
+    expect(lastUrl().searchParams.get("court")).toBe("scotus");
+    expect(body.total_matches).toBe(2175);
+    expect(body.results[0].date_argued).toBe("1966-02-28");
+    expect(body.results[0].duration_seconds).toBe(3600);
+    expect(body.results[0].download_url).toBe("https://example.com/audio.mp3");
+  });
+});
+
+describe("docket_lookup fielded docket number", () => {
+  it("routes docket_number through the docketNumber:() operator with quotes stripped", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 6, next: null, results: [] }));
+    await call("docket_lookup", { docket_number: '1:20-cv-"03590"' });
+    expect(lastUrl().searchParams.get("q")).toBe('docketNumber:"1:20-cv-03590"');
+  });
+});
+
+describe("court_list cache", () => {
+  it("a complete unfiltered walk is cached; the next filtered call fetches nothing", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        count: 2,
+        next: null,
+        results: [
+          { id: "scotus", full_name: "Supreme Court of the United States", jurisdiction: "F", in_use: true },
+          { id: "nysd", full_name: "Southern District of New York", jurisdiction: "FD", in_use: true },
+        ],
+      }),
+    );
+    // Name filter forces a full-table walk; the single mocked page has no `next`,
+    // so the walk is complete and cacheable.
+    const first = payload(await call("court_list", { q: "supreme" }));
+    expect(first.returned).toBe(1);
+    const callsAfterFirst = fetchMock.mock.calls.length;
+
+    const second = payload(await call("court_list", { q: "york" }));
+    expect(second.returned).toBe(1);
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst); // served from cache
   });
 });

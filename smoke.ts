@@ -93,6 +93,37 @@ async function main(): Promise<void> {
     console.log(`     -> cluster ${sampleClusterId}: ${body.case_name ?? "(no name)"}; ${(body.citations ?? []).length} citation(s), ${(body.sub_opinion_ids ?? []).length} opinion(s)`);
   });
 
+  await run("cited_by", async () => {
+    // Obergefell's majority opinion (id 2812209): a heavily cited modern case.
+    const body = parse(await client.callTool({ name: "cited_by", arguments: { opinion_id: 2812209 } }));
+    console.log(`     -> ${body.total_citing} citing opinion(s); newest: ${body.results[0]?.case_name ?? "(none)"} (${body.results[0]?.date_filed ?? "?"})`);
+    if (typeof body.total_citing !== "number" || body.total_citing < 1) throw new Error("expected at least one citing opinion");
+  });
+
+  await run("case_authorities", async () => {
+    const body = parse(await client.callTool({ name: "case_authorities", arguments: { opinion_id: 2812209, limit: 10 } }));
+    console.log(`     -> ${body.total_authorities} authorit(ies); deepest: opinion ${body.results[0]?.cited_opinion_id ?? "(none)"} depth ${body.results[0]?.depth ?? "?"}`);
+    if (!Array.isArray(body.results)) throw new Error("expected an authorities array");
+  });
+
+  await run("oral_arguments", async () => {
+    const body = parse(await client.callTool({ name: "oral_arguments", arguments: { q: "miranda", court: "scotus", limit: 3 } }));
+    console.log(`     -> ${body.total_matches} recording(s); first: ${body.results[0]?.case_name ?? "(none)"} argued ${body.results[0]?.date_argued ?? "?"}`);
+    if (typeof body.total_matches !== "number") throw new Error("expected a match count");
+  });
+
+  await run("docket_entries", async () => {
+    // Resolve a real docket id first, the way an agent would.
+    const dockets = parse(await client.callTool({ name: "docket_lookup", arguments: { q: "New York" } }));
+    const docketId = dockets.results?.find((r: any) => r.docket_id != null)?.docket_id;
+    if (docketId == null) {
+      console.log("     -> skipped (no docket id from docket_lookup)");
+      return;
+    }
+    const body = parse(await client.callTool({ name: "docket_entries", arguments: { docket_id: docketId, limit: 5 } }));
+    console.log(`     -> docket ${docketId}: ${body.total_entries ?? 0} entr(ies); first: #${body.results[0]?.entry_number ?? "?"} ${body.results[0]?.date_filed ?? ""}`);
+  });
+
   await client.close();
   await server.close();
 

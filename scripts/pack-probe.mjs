@@ -56,7 +56,17 @@ ok(`packed ${tgz}`);
 
 // The tarball must not carry sources, tests or tooling.
 const listing = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: repo, shell: true, encoding: "utf8" });
-const files = JSON.parse(listing.stdout)[0].files.map((f) => f.path);
+// npm's --json shape differs by version: an ARRAY of results on older npm,
+// an OBJECT keyed by package name on newer (observed npm 11, 2026-08-22).
+// Some configs also wrap stdout in notice lines. Parse the JSON span and
+// accept either shape.
+const rawListing = listing.stdout;
+const jsonStart = Math.min(...["[", "{"].map((c) => rawListing.indexOf(c)).filter((i) => i >= 0));
+const jsonEnd = Math.max(rawListing.lastIndexOf("]"), rawListing.lastIndexOf("}"));
+if (!Number.isFinite(jsonStart) || jsonEnd < 0) fail("npm pack --dry-run --json produced no JSON");
+const parsedListing = JSON.parse(rawListing.slice(jsonStart, jsonEnd + 1));
+const listingEntry = Array.isArray(parsedListing) ? parsedListing[0] : Object.values(parsedListing)[0];
+const files = listingEntry.files.map((f) => f.path);
 const leaked = files.filter((f) => /^(test|smoke|tsconfig|\.env|server\.ts|index\.ts)/.test(f));
 if (leaked.length) fail(`tarball leaks non-shippable files: ${leaked.join(", ")}`);
 ok(`tarball is ${files.length} files, no sources or tests`);

@@ -84,6 +84,7 @@ const CITATION_MAX_PER_REQUEST = 250;
 //   p  = judges / people                  oa = oral-argument audio
 const SEARCH_TYPE_OPINION = "o";
 const SEARCH_TYPE_DOCKET = "r";
+const SEARCH_TYPE_ORAL_ARGUMENT = "oa";
 
 // opinion_search sort options -> the real CourtListener `order_by` values.
 const ORDER_BY: Record<string, string> = {
@@ -402,6 +403,56 @@ function normalizeDocketHit(r: Row): Record<string, unknown> {
   };
 }
 
+/** Normalize one type=oa (oral argument) search hit (fields verified live 2026-08-23). */
+function normalizeOralArgumentHit(r: Row): Record<string, unknown> {
+  return {
+    case_name: str(r.caseName) ?? str(r.case_name_full),
+    court: str(r.court),
+    court_id: str(r.court_id),
+    docket_number: str(r.docketNumber),
+    date_argued: str(r.dateArgued),
+    date_reargued: str(r.dateReargued),
+    judges: str(r.judge),
+    duration_seconds: num(r.duration),
+    audio_id: num(r.id),
+    docket_id: num(r.docket_id),
+    download_url: str(r.download_url),
+    snippet: str(r.snippet),
+    absolute_url: fullUrl(r.absolute_url),
+  };
+}
+
+/** Normalize one /docket-entries/ record, defensively (auth-only endpoint). */
+function normalizeDocketEntry(r: Row): Record<string, unknown> {
+  const docs = Array.isArray(r.recap_documents) ? (r.recap_documents as Row[]) : [];
+  return {
+    id: num(r.id),
+    entry_number: num(r.entry_number),
+    date_filed: str(r.date_filed),
+    description: str(r.description),
+    recap_documents: docs.map((d) => ({
+      id: num(d.id),
+      document_number: str(d.document_number),
+      attachment_number: num(d.attachment_number),
+      description: str(d.description),
+      short_description: str(d.description_short) ?? str(d.short_description),
+      page_count: num(d.page_count),
+      is_available: bool(d.is_available),
+      filepath_local: str(d.filepath_local),
+      absolute_url: fullUrl(d.absolute_url),
+    })),
+  };
+}
+
+/** Normalize one /opinions-cited/ record, defensively (auth-only endpoint). */
+function normalizeCitedPair(r: Row): Record<string, unknown> {
+  return {
+    cited_opinion_id: idFromUrl(r.cited_opinion) ?? num(r.cited_opinion),
+    citing_opinion_id: idFromUrl(r.citing_opinion) ?? num(r.citing_opinion),
+    depth: num(r.depth), // how many times the citing opinion cites this authority
+  };
+}
+
 /** Normalize one /courts/ record. */
 function normalizeCourt(c: Row): Record<string, unknown> {
   return {
@@ -688,6 +739,83 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "cited_by",
+    description:
+      "Every opinion that CITES a given opinion — the free version of a citator check ('is this " +
+      "case still being relied on, and by whom'). Pass an opinion id (from case_detail's " +
+      "sub_opinion_ids, or an opinion_search hit's cluster via case_detail). Returns citing " +
+      "opinions newest-first or most-cited-first with the same fields as opinion_search. Works " +
+      "without a token. NOTE: this reports who cites the case; it does NOT classify the treatment " +
+      "(followed/distinguished/overruled) — read the citing opinions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        opinion_id: { type: "integer", description: "Numeric OPINION id (not a cluster id). case_detail on a cluster lists its sub_opinion_ids." },
+        order_by: { type: "string", enum: ["newest", "oldest", "most_cited", "relevance"], description: "Sort order (default newest)." },
+        limit: { type: "integer", description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}).` },
+        cursor: { type: "string", description: "Opaque cursor from a previous response's next_cursor." },
+      },
+      required: ["opinion_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "case_authorities",
+    description:
+      "The reverse of cited_by: every authority a given opinion RELIES ON (its table of " +
+      "authorities), with a depth count of how many times each is cited. Pass the citing opinion's " +
+      "id. Requires COURTLISTENER_API_TOKEN (authentication-only endpoint). Returns cited opinion " +
+      "ids; fetch interesting ones with case_detail (type opinion) or their clusters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        opinion_id: { type: "integer", description: "Numeric OPINION id whose authorities to list." },
+        limit: { type: "integer", description: `Max authorities to return (1-${MAX_RESULTS}, default ${MAX_RESULTS}).` },
+      },
+      required: ["opinion_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "docket_entries",
+    description:
+      "The actual filing history of a federal docket from the RECAP archive: numbered entries, " +
+      "dates, descriptions, and any archived PACER documents (with page counts and availability). " +
+      "Pass a docket_id from docket_lookup. Requires COURTLISTENER_API_TOKEN (authentication-only " +
+      "endpoint). Coverage note: RECAP holds what its users have bought from PACER — an entry or " +
+      "document not present may still exist on PACER.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        docket_id: { type: "integer", description: "Numeric docket id (from docket_lookup results)." },
+        limit: { type: "integer", description: `Max entries to return (1-${MAX_RESULTS}, default ${MAX_RESULTS}).` },
+        cursor: { type: "string", description: "Opaque cursor from a previous response's next_cursor." },
+      },
+      required: ["docket_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oral_arguments",
+    description:
+      "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue " +
+      "date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an " +
+      "issue was actually argued. Works without a token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "Search query (case name, party, or topic)." },
+        court: { type: "string", description: 'Optional court id filter (e.g. "scotus", "ca2"). Get ids from court_list.' },
+        argued_after: { type: "string", description: "Optional ISO date (YYYY-MM-DD); only arguments on/after." },
+        argued_before: { type: "string", description: "Optional ISO date (YYYY-MM-DD); only arguments on/before." },
+        limit: { type: "integer", description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}).` },
+        cursor: { type: "string", description: "Opaque cursor from a previous response's next_cursor." },
+      },
+      required: ["q"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "judge_lookup",
     description:
       "Look up judges / people in CourtListener's judiciary database (type via /people/) by last and/or first name. " +
@@ -761,7 +889,12 @@ async function docketLookup(args: Row): Promise<unknown> {
   // /search/ serves one fixed ~20-row page (ignores page_size); cap accordingly.
   const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
   const cursor = str(args.cursor);
-  const effectiveQ = [q, docketNumber].filter(Boolean).join(" ").trim();
+  // A docket number goes through the FIELDED operator, not free text: fielded
+  // docketNumber:"1:20-cv-03590" matched 6 dockets live where the free-text
+  // form matched thousands (verified 2026-08-23). Inner quotes are stripped so
+  // user input cannot break out of the quoted operator value.
+  const fielded = docketNumber ? `docketNumber:"${docketNumber.replace(/"/g, "")}"` : null;
+  const effectiveQ = [q, fielded].filter(Boolean).join(" ").trim();
 
   const json = await clGet("/search/", {
     q: effectiveQ || undefined,
@@ -786,14 +919,34 @@ async function docketLookup(args: Row): Promise<unknown> {
  * page, once at least `stopAt` rows are collected (Infinity = whole table), or at
  * the MAX_COURT_PAGES safety cap.
  */
+/**
+ * In-process cache of a COMPLETE court-table walk. The table is ~3,359 rows
+ * over ~168 pages at the polite throttle (~40s), and CourtListener's own docs
+ * say the courts API "does not change often" and can be cached — so the walk
+ * happens at most once per day per process, and every later name-filtered
+ * court_list answers instantly. Only complete, unfiltered walks are cached
+ * (a jurisdiction-filtered or partial walk is not the whole table).
+ */
+const COURT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+let courtCache: { rows: Row[]; at: number } | null = null;
+
 async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Promise<Row[]> {
+  if (!jurisdiction && courtCache && Date.now() - courtCache.at < COURT_CACHE_TTL_MS) {
+    return courtCache.rows;
+  }
   const all: Row[] = [];
+  let complete = false;
   for (let page = 1; page <= MAX_COURT_PAGES; page++) {
     const json = await clGet("/courts/", { jurisdiction: jurisdiction ?? undefined, page });
     all.push(...extractResults(json));
     const hasNext = str((json as Row).next) != null;
-    if (!hasNext || all.length >= stopAt) break;
+    if (!hasNext) {
+      complete = true;
+      break;
+    }
+    if (all.length >= stopAt) break;
   }
+  if (!jurisdiction && complete) courtCache = { rows: all, at: Date.now() };
   return all;
 }
 
@@ -928,6 +1081,115 @@ async function judgeLookup(args: Row): Promise<unknown> {
   };
 }
 
+async function citedBy(args: Row): Promise<unknown> {
+  const opinionId = num(args.opinion_id);
+  if (opinionId == null || !Number.isInteger(opinionId) || opinionId <= 0) {
+    throw new Error("opinion_id is required (a positive numeric OPINION id; a cluster's case_detail lists its sub_opinion_ids).");
+  }
+  const orderKey = str(args.order_by) ?? "newest";
+  const order_by = ORDER_BY[orderKey];
+  if (!order_by) throw new Error(`order_by must be one of: ${Object.keys(ORDER_BY).join(", ")}.`);
+  const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
+  const cursor = str(args.cursor);
+
+  // The cites:() fielded operator (verified live 2026-08-23; keyless).
+  const json = await clGet("/search/", {
+    q: `cites:(${opinionId})`,
+    type: SEARCH_TYPE_OPINION,
+    order_by,
+    cursor: cursor ?? undefined,
+  });
+  const results = extractResults(json).slice(0, limit).map(normalizeOpinionHit);
+  return {
+    query: { opinion_id: opinionId, order_by: orderKey, cursor: cursor ?? null },
+    total_citing: num((json as Row).count),
+    returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
+    note:
+      "Citing opinions only — no treatment classification (followed / distinguished / overruled). " +
+      "A case with many recent citations is being engaged with; read the citing opinions to learn how.",
+    results,
+  };
+}
+
+async function caseAuthorities(args: Row): Promise<unknown> {
+  const opinionId = num(args.opinion_id);
+  if (opinionId == null || !Number.isInteger(opinionId) || opinionId <= 0) {
+    throw new Error("opinion_id is required (a positive numeric OPINION id).");
+  }
+  const limit = clampLimit(args.limit, MAX_RESULTS);
+
+  // /opinions-cited/ answers 401 without a token (verified live 2026-08-23).
+  const json = await clGet(
+    "/opinions-cited/",
+    { citing_opinion: opinionId, page_size: limit },
+    { requireAuth: true },
+  );
+  const results = extractResults(json).slice(0, limit).map(normalizeCitedPair);
+  return {
+    query: { opinion_id: opinionId },
+    total_authorities: num((json as Row).count),
+    returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
+    note: "depth = how many times the opinion cites that authority. Fetch any authority with case_detail (type opinion).",
+    results,
+  };
+}
+
+async function docketEntries(args: Row): Promise<unknown> {
+  const docketId = num(args.docket_id);
+  if (docketId == null || !Number.isInteger(docketId) || docketId <= 0) {
+    throw new Error("docket_id is required (a positive numeric docket id from docket_lookup).");
+  }
+  const limit = clampLimit(args.limit, MAX_RESULTS);
+  const cursor = str(args.cursor);
+
+  // /docket-entries/ answers 401 without a token (verified live 2026-08-23).
+  const json = await clGet(
+    "/docket-entries/",
+    { docket_id: docketId, page_size: limit, cursor: cursor ?? undefined },
+    { requireAuth: true },
+  );
+  const results = extractResults(json).slice(0, limit).map(normalizeDocketEntry);
+  return {
+    query: { docket_id: docketId, cursor: cursor ?? null },
+    total_entries: num((json as Row).count),
+    returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
+    note:
+      "RECAP holds what its users have purchased from PACER; a missing entry or document may still " +
+      "exist on PACER. Docket entries record what was FILED, not what was decided.",
+    results,
+  };
+}
+
+async function oralArguments(args: Row): Promise<unknown> {
+  const q = str(args.q);
+  if (!q) throw new Error("q is required (case name, party, or topic).");
+  const court = str(args.court);
+  const arguedAfter = normDate(args.argued_after, "argued_after");
+  const arguedBefore = normDate(args.argued_before, "argued_before");
+  const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
+  const cursor = str(args.cursor);
+
+  const json = await clGet("/search/", {
+    q,
+    type: SEARCH_TYPE_ORAL_ARGUMENT,
+    court: court ?? undefined,
+    argued_after: arguedAfter,
+    argued_before: arguedBefore,
+    cursor: cursor ?? undefined,
+  });
+  const results = extractResults(json).slice(0, limit).map(normalizeOralArgumentHit);
+  return {
+    query: { q, court: court ?? null, argued_after: arguedAfter ?? null, argued_before: arguedBefore ?? null, cursor: cursor ?? null },
+    total_matches: num((json as Row).count),
+    returned: results.length,
+    next_cursor: extractCursor((json as Row).next),
+    results,
+  };
+}
+
 const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
   opinion_search: opinionSearch,
   docket_lookup: docketLookup,
@@ -935,6 +1197,10 @@ const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
   case_detail: caseDetail,
   citation_lookup: citationLookup,
   judge_lookup: judgeLookup,
+  cited_by: citedBy,
+  case_authorities: caseAuthorities,
+  docket_entries: docketEntries,
+  oral_arguments: oralArguments,
 };
 
 // ---------------------------------------------------------------------------
@@ -971,7 +1237,7 @@ function withDisclaimer(result: unknown): unknown {
 
 export function createServer(): Server {
   const server = new Server(
-    { name: "mcp-courtwatch", version: "1.0.0" },
+    { name: "mcp-courtwatch", version: "1.1.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -997,3 +1263,10 @@ export function createServer(): Server {
 
   return server;
 }
+
+// Exported for tests only (not part of the MCP surface).
+export const __test = {
+  resetCourtCache(): void {
+    courtCache = null;
+  },
+};

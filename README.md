@@ -14,6 +14,10 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 | `case_detail` | `id` (required), `type` (`cluster` or `opinion`) | Full case by id. A cluster (`/clusters/{id}/`) gives case name, citations, date, judges, and its opinion ids. An opinion (`/opinions/{id}/`) gives the full opinion text. Requires a token. |
 | `citation_lookup` | `text` (required) | Verify citations (`POST /citation-lookup/`). Pass free text (a brief, a draft) or a single citation string; every citation recognized is checked against the database of real cases. Per citation: `FOUND` (with matched case name, date, link) or an explicit `NOT_FOUND` / `UNKNOWN_REPORTER` flag. Requires a token. |
 | `judge_lookup` | `name_last` and/or `name_first` (at least one), `limit` | Judges / people (`/people/`). Per person: id, assembled name, birth and death dates and place, gender, count of positions on file. |
+| `cited_by` | `opinion_id` (required), `order_by`, `limit`, `cursor` | Every opinion citing a given opinion, via the `cites:()` search operator — a free citator check (who still relies on this case). Newest-first by default. No treatment classification. Keyless. |
+| `case_authorities` | `opinion_id` (required), `limit` | The authorities an opinion relies on (its table of authorities) with a per-authority citation depth, via `/opinions-cited/`. Token required. |
+| `docket_entries` | `docket_id` (required), `limit`, `cursor` | A federal docket's filing history from the RECAP archive: numbered entries, dates, descriptions, archived PACER documents with page counts and availability. Token required. RECAP holds what its users bought from PACER. |
+| `oral_arguments` | `q` (required), `court`, `argued_after`, `argued_before`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, MP3 link. Keyless. |
 
 `order_by` for `opinion_search` is one of `relevance` (default), `newest`, `oldest`, `most_cited`. Court `jurisdiction` codes include `F` (federal appellate and other), `FD` (federal district), `FB` (bankruptcy), `S` (state), `SA` (state appellate), `SS` (state supreme).
 
