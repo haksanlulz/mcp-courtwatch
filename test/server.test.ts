@@ -968,3 +968,27 @@ describe("court_list cache", () => {
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst); // served from cache
   });
 });
+
+
+describe("ux fixes 1.1.1", () => {
+  it("citation_lookup always carries the unrecognized-reporter coverage note", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const body = payload(await call("citation_lookup", { text: "totally uncited prose" }));
+    expect(String(body.coverage_note)).toContain("unrecognized or invented reporter");
+    expect(body.all_verified).toBe(false); // zero recognized is never a pass
+  });
+
+  it("docket_entries with no reported count says so instead of a bare null", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ next: null, results: [{ id: 1, entry_number: 1, date_filed: "2024-01-01", description: "x", recap_documents: [] }] }));
+    const body = payload(await call("docket_entries", { docket_id: 5 }));
+    expect(body.total_entries).toBeNull();
+    expect(body.total_reported).toBe(false);
+    expect(body.returned).toBe(1);
+  });
+
+  it("oral_arguments order_by newest maps to dateArgued desc", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 1, next: null, results: [] }));
+    await call("oral_arguments", { q: "miranda", order_by: "newest" });
+    expect(lastUrl().searchParams.get("order_by")).toBe("dateArgued desc");
+  });
+});

@@ -812,6 +812,7 @@ const TOOLS: Tool[] = [
       properties: {
         q: { type: "string", description: "Search query (case name, party, or topic)." },
         court: { type: "string", description: 'Optional court id filter (e.g. "scotus", "ca2"). Get ids from court_list.' },
+        order_by: { type: "string", enum: ["relevance", "newest", "oldest"], description: "Sort order (default relevance; newest/oldest sort by argue date)." },
         argued_after: { type: "string", description: "Optional ISO date (YYYY-MM-DD); only arguments on/after." },
         argued_before: { type: "string", description: "Optional ISO date (YYYY-MM-DD); only arguments on/before." },
         limit: { type: "integer", description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}).` },
@@ -1054,6 +1055,15 @@ async function citationLookup(args: Row): Promise<unknown> {
     not_checked: notChecked,
     // True only when at least one citation was recognized AND every one resolved.
     all_verified: results.length > 0 && found === results.length,
+    // The blind spot a reader must know about: the extractor can only check
+    // citations whose REPORTER it recognizes. A fabricated cite with an
+    // invented reporter (live example: "999 A.D.9th 999") is not recognized,
+    // not counted, and not flagged — so all_verified=true means "every
+    // RECOGNIZED citation resolved", never "nothing in this text is fake".
+    coverage_note:
+      "Only citations in recognized reporter formats are checked. A citation-like string with an " +
+      "unrecognized or invented reporter is invisible to this check — it is not counted and not " +
+      "flagged. all_verified covers recognized citations only.",
     warning:
       problems.length > 0
         ? `${unverified} of ${results.length} citation(s) did NOT verify: ${problems.join("; ")}. ` +
@@ -1132,9 +1142,12 @@ async function caseAuthorities(args: Row): Promise<unknown> {
     { requireAuth: true },
   );
   const results = extractResults(json).slice(0, limit).map(normalizeCitedPair);
+  const totalAuthorities = num((json as Row).count);
   return {
     query: { opinion_id: opinionId },
-    total_authorities: num((json as Row).count),
+    // v4 cursor pagination often omits the count; null means "not reported".
+    total_authorities: totalAuthorities,
+    total_reported: totalAuthorities != null,
     returned: results.length,
     next_cursor: extractCursor((json as Row).next),
     note: "depth = how many times the opinion cites that authority. Fetch any authority with case_detail (type opinion).",
@@ -1160,9 +1173,13 @@ async function docketEntries(args: Row): Promise<unknown> {
     { requireAuth: true },
   );
   const results = extractResults(json).slice(0, limit).map(normalizeDocketEntry);
+  const totalEntries = num((json as Row).count);
   return {
     query: { docket_id: docketId, cursor: cursor ?? null },
-    total_entries: num((json as Row).count),
+    // v4 cursor pagination often omits the count; null means "not reported",
+    // not zero — returned + next_cursor are the real signals.
+    total_entries: totalEntries,
+    total_reported: totalEntries != null,
     returned: results.length,
     next_cursor: extractCursor((json as Row).next),
     note:
@@ -1172,10 +1189,20 @@ async function docketEntries(args: Row): Promise<unknown> {
   };
 }
 
+const OA_ORDER_BY: Record<string, string | undefined> = {
+  relevance: undefined, // the search default
+  newest: "dateArgued desc",
+  oldest: "dateArgued asc",
+};
+
 async function oralArguments(args: Row): Promise<unknown> {
   const q = str(args.q);
   if (!q) throw new Error("q is required (case name, party, or topic).");
   const court = str(args.court);
+  const orderKey = str(args.order_by) ?? "relevance";
+  if (!(orderKey in OA_ORDER_BY)) {
+    throw new Error(`order_by must be one of: ${Object.keys(OA_ORDER_BY).join(", ")}.`);
+  }
   const arguedAfter = normDate(args.argued_after, "argued_after");
   const arguedBefore = normDate(args.argued_before, "argued_before");
   const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
@@ -1185,6 +1212,7 @@ async function oralArguments(args: Row): Promise<unknown> {
     q,
     type: SEARCH_TYPE_ORAL_ARGUMENT,
     court: court ?? undefined,
+    order_by: OA_ORDER_BY[orderKey],
     argued_after: arguedAfter,
     argued_before: arguedBefore,
     cursor: cursor ?? undefined,
