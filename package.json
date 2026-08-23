@@ -1,7 +1,7 @@
 {
   "name": "@haksanlulz/mcp-courtwatch",
   "version": "1.1.0",
-  "description": "MCP server over CourtListener (Free Law Project) for free U.S. case-law and court-docket search, built for legal aid, tenant defense, pro-se litigants, and public-interest lawyers.",
+  "description": "MCP server over CourtListener (Free Law Project) for free U.S. legal research: case-law and docket search, a free citator check (who cites this case), tables of authorities, RECAP docket filing histories, oral-argument audio, judges, and citation verification that catches fabricated cites. Built for legal aid, tenant defense, pro-se litigants, and public-interest lawyers.",
   "type": "module",
   "license": "MIT",
   "author": "Abishai James",
@@ -22,15 +22,19 @@
     "verify:pack": "node scripts/pack-probe.mjs"
   },
   "keywords": [
-    "mcp",
-    "model-context-protocol",
+    "case-law",
+    "citation-check",
+    "citator",
+    "civic-data",
+    "court-dockets",
     "courtlistener",
     "free-law-project",
-    "case-law",
-    "court-dockets",
     "legal-aid",
+    "mcp",
+    "model-context-protocol",
+    "oral-arguments",
     "pro-se",
-    "civic-data"
+    "recap"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0"

@@ -17,7 +17,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 | `cited_by` | `opinion_id` (required), `order_by`, `limit`, `cursor` | Every opinion citing a given opinion, via the `cites:()` search operator — a free citator check (who still relies on this case). Newest-first by default. No treatment classification. Keyless. |
 | `case_authorities` | `opinion_id` (required), `limit` | The authorities an opinion relies on (its table of authorities) with a per-authority citation depth, via `/opinions-cited/`. Token required. |
 | `docket_entries` | `docket_id` (required), `limit`, `cursor` | A federal docket's filing history from the RECAP archive: numbered entries, dates, descriptions, archived PACER documents with page counts and availability. Token required. RECAP holds what its users bought from PACER. |
-| `oral_arguments` | `q` (required), `court`, `argued_after`, `argued_before`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, MP3 link. Keyless. |
+| `oral_arguments` | `q` (required), `court`, `order_by` (relevance/newest/oldest), `argued_after`, `argued_before`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, MP3 link. Keyless. |
 
 `order_by` for `opinion_search` is one of `relevance` (default), `newest`, `oldest`, `most_cited`. Court `jurisdiction` codes include `F` (federal appellate and other), `FD` (federal district), `FB` (bankruptcy), `S` (state), `SA` (state appellate), `SS` (state supreme).
 
@@ -26,7 +26,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 - Base URL: `https://www.courtlistener.com/api/rest/v4`
 - Auth: a free API token, sent as the header `Authorization: Token <token>`.
 - Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` and `/people/` paginate by opaque `cursor`; `/courts/` paginates by page number (`?page=N`). Detail endpoints return a bare object. `POST /citation-lookup/` returns a bare JSON array (one item per citation recognized in the text).
-- Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/`, `/opinions/{id}/`, and `POST /citation-lookup/` return HTTP 401 without a token, so `case_detail` and `citation_lookup` require one.
+- Access: `/search/`, `/courts/`, and `/people/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/`, `/opinions/{id}/`, `/opinions-cited/`, `/docket-entries/`, and `POST /citation-lookup/` return HTTP 401 without a token, so `case_detail`, `citation_lookup`, `case_authorities`, and `docket_entries` require one. The `/docket-entries/` filter parameter is `docket` (not `docket_id` — the API answers 400 `unknown_params` otherwise; found live).
 - Citation-lookup limits (server-side): `text` max 64,000 characters (enforced pre-flight here with a clear error; the tool never truncates, since a dropped tail would mean unchecked citations); the first 250 citations per call are looked up and any beyond that come back flagged per-item as not checked; rate limit 60 citations/min.
 
 Sources:
@@ -89,7 +89,7 @@ npm run build     # emits dist/; the published bin is dist/index.js
 
 ## API token
 
-`case_detail` and `citation_lookup` need a free CourtListener token, and the other tools run faster (higher rate limit) with one. Create a free account, open Profile then the API page, and copy the token. Docs: https://www.courtlistener.com/help/api/rest/
+`case_detail`, `citation_lookup`, `case_authorities`, and `docket_entries` need a free CourtListener token, and the other tools run faster (higher rate limit) with one. Create a free account, open Profile then the API page, and copy the token. Docs: https://www.courtlistener.com/help/api/rest/
 
 Expose it as `COURTLISTENER_API_TOKEN`:
 
@@ -98,7 +98,9 @@ export COURTLISTENER_API_TOKEN=your-token-here   # macOS / Linux
 setx COURTLISTENER_API_TOKEN your-token-here      # Windows (new shells)
 ```
 
-Without the token, `opinion_search`, `docket_lookup`, `court_list`, and `judge_lookup` still work at CourtListener's unauthenticated rate limit. `case_detail` and `citation_lookup` return a clear error telling you to set the token. The token is never logged.
+Without the token, `opinion_search`, `docket_lookup`, `court_list`, `judge_lookup`, `cited_by`, and `oral_arguments` still work at CourtListener's unauthenticated rate limit. The token-gated tools return a clear error telling you to set the token. The token is never logged.
+
+**New-account rate limit:** fresh CourtListener accounts are throttled at 5 requests/minute (it rises as the account ages). Until then, set `COURTWATCH_THROTTLE_MS=15000` in the server's env to pace requests under that limit — the default spacing is 200ms.
 
 ## Example
 
@@ -140,7 +142,7 @@ Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citatio
 
 Courts have sanctioned filings built on citations that do not exist. Run a draft's citations through `citation_lookup` before filing.
 
-Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. Wade, 410 U.S. 113 (1973); Smith v. Imaginary, 999 U.S. 9999 (2099)." }`. This endpoint requires a token this repo was built without, so unlike the example above the output here is constructed from the documented response shape, not captured from a live call (see Caveats):
+Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. Wade, 410 U.S. 113 (1973); Smith v. Imaginary, 999 U.S. 9999 (2099)." }`. The output below is illustrative of the response shape (the live smoke runs this exact real-plus-fabricated check and fails unless the real one resolves and the fake flags `NOT_FOUND`):
 
 ```json
 {
@@ -194,17 +196,18 @@ Call `citation_lookup` with `{ "text": "Tenants are protected here. See Roe v. W
 
 The fabricated citation comes back `NOT_FOUND` with a top-level `warning`. Per-citation `status` mirrors the API's own codes: `200` found, `300` found with multiple matching clusters (`FOUND_MULTIPLE` — a real citation, ambiguous mapping), `400` unknown reporter, `404` not found, `429` past the 250-citations-per-call cap (`NOT_CHECKED_OVER_CAP` — split the text and re-run the rest). A lookup that recognizes zero citations says so in a `note` instead of pretending to have verified anything.
 
-## Caveats
+**The blind spot to know about:** the extractor can only flag what it can recognize. `999 U.S. 9999` is caught (real reporter, fake volume: `NOT_FOUND`), but a cite with an *invented reporter* — live example `999 A.D.9th 999` — is not recognized as a citation at all, so it is neither counted nor flagged. Every response carries a `coverage_note` stating this; treat `all_verified` as covering recognized citations only.
 
-Built without a token, so:
+## Caveats and verification state
 
-- The `case_detail` field names (cluster and opinion objects) come from the Case Law API docs plus the search-result shape, not from a live authenticated GET (the `/clusters/` and `/opinions/` endpoints return HTTP 401 without a token). The normalizer is defensive: unknown or missing values coerce to `null` (or empty arrays) rather than throwing, and citations accept either string or object form. Run `npm run smoke` with a real token to confirm these end to end.
-- The `citation_lookup` response shape (per-citation fields, the 200/300/400/404/429 status codes, the serializer-level 64,000-char text cap, the 250-citation per-request cap) comes from the CourtListener source (`cl/citations/api_views.py`, `api_serializers.py`, `cl/settings/project/citations.py`) and the Citation Lookup docs, not from a live authenticated POST (the endpoint returns HTTP 401 without a token). The normalizer is defensive like the rest. Run `npm run smoke` with a token: it checks one real citation (`410 U.S. 113`, Roe v. Wade) plus one fabricated one and fails unless the real one resolves and the fake comes back `NOT_FOUND`.
-- The clusters returned by `citation_lookup` do not include the court (in CourtListener's model the court hangs off the docket, not the cluster). For the court, follow the match's `absolute_url` or pass its `cluster_id` to `case_detail` and the `docket_id` onward. Deliberately not auto-fetched here: a 250-citation brief would fan out into hundreds of extra docket calls.
-- `docket_number` is folded into the free-text `q` term rather than sent as a dedicated field, so matching is best-effort. If a known docket number under-returns, also pass the case name in `q`.
-- `court_list` applies its `q` name filter across the full courts table, walked one page at a time server-side (the `/courts/` endpoint ignores `page_size`, so the ~3,400 courts span ~170 pages of ~20 up to a safety cap). Scope by `jurisdiction` to page less; a token is recommended for the unfiltered full-table scan.
-- `opinion_search` and `docket_lookup` return one fixed `/search/` page of ~20 results; for more, pass the response's `next_cursor` back as the `cursor` argument. The endpoint ignores `page_size`, so `limit` cannot exceed one page (it is capped at 20 rather than advertising an unreachable number).
-- The `order_by` values, the `court` / `filed_after` / `filed_before` filters, and the search / courts / people field names match the live API, as does the fixed ~20-row page size of `/search/` and `/courts/` (both ignore `page_size`). The token-gated behavior of `case_detail` is the main thing the keyed smoke should confirm.
+Every tool — including all four token-gated ones — has been run live against the real API with a real token (`npm run smoke`, 10/10, 2026-08-23). Two contract facts were only discoverable live and are baked in: the `/docket-entries/` filter parameter is `docket` (an unauthenticated probe cannot see this, since auth is checked before params), and new-account rate limiting is 5 requests/minute (see the token section). Standing caveats that are properties of the API, not gaps in verification:
+
+- **The citation checker has a structural blind spot, named in every payload.** It can only check citations whose reporter it recognizes. A fabricated cite with an invented reporter (live example: `999 A.D.9th 999`) is not recognized, not counted, and not flagged, so `all_verified: true` means "every recognized citation resolved" — never "nothing in this text is fake." Every `citation_lookup` response carries a `coverage_note` saying exactly this.
+- The clusters returned by `citation_lookup` do not include the court (in CourtListener's model the court hangs off the docket, not the cluster). For the court, follow the match's `absolute_url` or pass its `cluster_id` to `case_detail`. Deliberately not auto-fetched: a 250-citation brief would fan out into hundreds of extra docket calls.
+- A `docket_number` argument is sent through the fielded `docketNumber:"..."` search operator (live: 6 matches where the free-text form matched thousands). Combine with `q` for case-name context when a docket number alone under-returns.
+- `court_list` with a name filter walks the full courts table one page at a time (the `/courts/` endpoint ignores `page_size`; ~3,400 courts over ~170 pages). A complete walk is cached in-process for 24 hours, so it happens at most once per day per server process; scope by `jurisdiction` to avoid it entirely. On a 5-req/min account, a full walk cannot finish inside one client timeout — filter by jurisdiction until the account limit rises.
+- `opinion_search`, `docket_lookup`, `cited_by`, and `oral_arguments` return one fixed `/search/` page of ~20 results; for more, pass `next_cursor` back as `cursor`. The endpoint ignores `page_size`, so `limit` caps at 20 rather than advertising an unreachable number.
+- `/docket-entries/` and `/opinions-cited/` use v4 cursor pagination, which often omits the total count: `total_entries` / `total_authorities` come back `null` with `total_reported: false` — that means "not reported", never zero.
 
 ## Develop
 
@@ -216,7 +219,7 @@ npm run typecheck
 
 ## AI assistance
 
-This project was built with AI assistance (Claude). Correctness was established by the test suite and typecheck (`npm test`, `npm run typecheck`): every tool is driven through a real MCP client over an in-memory transport with `fetch` stubbed to the documented CourtListener response shapes, and the unauthenticated search / courts / people surfaces were additionally checked against the live API. The token-gated endpoints are verified only to the extent the Caveats state, with `npm run smoke` as the live confirmation path. The author is accountable for what ships here.
+This project was built with AI assistance (Claude). Correctness was established by the test suite and typecheck (`npm test`, `npm run typecheck`): every tool is driven through a real MCP client over an in-memory transport with `fetch` stubbed to the documented CourtListener response shapes, and the unauthenticated search / courts / people surfaces were additionally checked against the live API. As of 2026-08-23 every tool, including the token-gated four, has additionally been verified live with a real token (`npm run smoke`, plus persona-driven scenario probes that surfaced and fixed the `docket` filter-param and fake-reporter-coverage findings). The author is accountable for what ships here.
 
 ## License
 
