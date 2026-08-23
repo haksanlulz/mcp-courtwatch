@@ -40,8 +40,14 @@ const CL_WEB = "https://www.courtlistener.com";
 const TOKEN_SIGNUP_URL = "https://www.courtlistener.com/help/api/rest/";
 /** Descriptive User-Agent (CourtListener is a free public service; be identifiable). */
 const UA = "mcp-courtwatch/1.0 (+https://github.com/haksanlulz/mcp-courtwatch)";
-/** Minimum spacing between outbound API calls (polite throttle). */
-const THROTTLE_MS = 200;
+/** Minimum spacing between outbound API calls (polite throttle). New
+ * CourtListener accounts are throttled at 5 requests/min; set
+ * COURTWATCH_THROTTLE_MS=13000 to pace under that until the account limit
+ * rises. Invalid values fall back to the default. */
+const THROTTLE_MS = (() => {
+  const v = Number(process.env.COURTWATCH_THROTTLE_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 200;
+})();
 /** Upper bound on results returned by a single search/list tool call. */
 const MAX_RESULTS = 50;
 /**
@@ -1145,9 +1151,12 @@ async function docketEntries(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
 
   // /docket-entries/ answers 401 without a token (verified live 2026-08-23).
+  // The filter parameter is `docket`, not `docket_id` — the API 400s with
+  // unknown_params otherwise (found by the live rung 2026-08-23; an unauth
+  // probe could not see it, since auth is checked before params).
   const json = await clGet(
     "/docket-entries/",
-    { docket_id: docketId, page_size: limit, cursor: cursor ?? undefined },
+    { docket: docketId, page_size: limit, cursor: cursor ?? undefined },
     { requireAuth: true },
   );
   const results = extractResults(json).slice(0, limit).map(normalizeDocketEntry);

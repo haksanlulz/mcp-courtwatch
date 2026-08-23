@@ -58,7 +58,11 @@ async function main(): Promise<void> {
   });
 
   await run("court_list", async () => {
-    const body = parse(await client.callTool({ name: "court_list", arguments: { q: "ninth circuit", limit: 5 } }));
+    // Jurisdiction filter, not a name filter: a name filter walks the FULL
+    // ~168-page court table, which cannot finish inside one MCP request on a
+    // rate-limited account (new CL accounts are 5 req/min). One page proves
+    // the channel; the full-walk path is covered by the cache test.
+    const body = parse(await client.callTool({ name: "court_list", arguments: { jurisdiction: "F", limit: 5 } }));
     console.log(`     -> ${body.returned} court(s); first id: ${body.courts[0]?.id ?? "(none)"}`);
   });
 

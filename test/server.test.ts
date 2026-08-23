@@ -887,7 +887,7 @@ describe("docket_entries", () => {
     );
     const body = payload(await call("docket_entries", { docket_id: 65745614 }));
     expect(lastUrl().pathname).toContain("/docket-entries/");
-    expect(lastUrl().searchParams.get("docket_id")).toBe("65745614");
+    expect(lastUrl().searchParams.get("docket")).toBe("65745614"); // the real filter param; docket_id 400s
     expect(body.total_entries).toBe(42);
     expect(body.next_cursor).toBe("xyz");
     expect(body.results[0].entry_number).toBe(12);
