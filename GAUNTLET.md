@@ -120,6 +120,20 @@ while the siblings run 4.1.10. A rate-limiter read called fairrent's throttle na
 it is correctly serialized. **Standing rule for this repo: a probe that cannot be shown
 to return a negative is not evidence** (workspace Audit Discipline Rules 22/23).
 
+### 2026-08-23 — 1.1.0: citator + RECAP + oral arguments (behavior-change class)
+
+`cited_by` (cites:() operator, keyless — verified live: 470 citing opinions
+for Obergefell's majority), `case_authorities` (/opinions-cited/, 401-gated),
+`docket_entries` (/docket-entries/, 401-gated), `oral_arguments` (type=oa,
+fields taken from a live probe). Fixes: docket_number now rides the FIELDED
+docketNumber:"..." operator (live: 6 matches vs thousands free-text); a
+complete court-table walk is cached in-process 24h (CL's docs bless caching
+that table), with a test-only reset because the cache is a module singleton
+and would otherwise leak across tests. Rungs: 43 tests, typecheck,
+verify:pack. ⚠️ Live smoke is token-gated and this machine has no token — the
+keyless additions were probed against the live API directly; the two
+401-gated tools are verified at the mock + pre-flight-error level only.
+
 ## Known gaps, ranked by blast radius
 
 1. **README-as-artifact.** It is what LobeHub and Glama render, and it still documents the
