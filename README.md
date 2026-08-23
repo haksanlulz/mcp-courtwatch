@@ -132,9 +132,7 @@ Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "ord
 }
 ```
 
-The `disclaimer` is attached to every response, in the payload rather than only
-in the tool description — a model composing an answer has the payload in hand
-and may no longer be holding the description.
+The `disclaimer` is attached to every response, in the payload rather than only in the tool description — a model composing an answer has the payload in hand and may no longer be holding the description.
 
 Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text. For the next page, pass `next_cursor` back as `cursor`.
 
