@@ -9,6 +9,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only by default. This workflow only checks out and tests; it needs no
+# write scope, and inheriting the repository default would grant more than that.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
