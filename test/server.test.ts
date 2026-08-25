@@ -466,16 +466,36 @@ describe("opinion_search", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("surfaces an HTTP 500 and a non-JSON page as isError", async () => {
-    fetchMock.mockResolvedValueOnce(textResponse("upstream boom", { ok: false, status: 500 }));
+  it("surfaces an HTTP 500 as isError, after exhausting retries", async () => {
+    // A 5xx is retried (see withRetry), so the mock must answer every attempt.
+    fetchMock.mockResolvedValue(textResponse("upstream boom", { ok: false, status: 500 }));
     const res500: any = await call("opinion_search", { q: "x" });
     expect(res500.isError).toBe(true);
     expect(res500.content[0].text).toContain("500");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 
-    fetchMock.mockResolvedValueOnce(textResponse("<html>maintenance</html>"));
+  it("surfaces a non-JSON page as isError WITHOUT retrying it", async () => {
+    // An HTML page is a rejected request or a changed API, not a wobble.
+    fetchMock.mockResolvedValue(textResponse("<html>maintenance</html>"));
     const resHtml: any = await call("opinion_search", { q: "x" });
     expect(resHtml.isError).toBe(true);
     expect(resHtml.content[0].text).toContain("non-JSON");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry a 4xx", async () => {
+    fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail: "bad request" }), { ok: false, status: 400 }));
+    const res: any = await call("opinion_search", { q: "x" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a 429, since that one means slow down", async () => {
+    fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail: "throttled" }), { ok: false, status: 429 }));
+    const res: any = await call("opinion_search", { q: "x" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
 

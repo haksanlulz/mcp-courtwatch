@@ -166,6 +166,47 @@ function throttled<T>(fn: () => Promise<T>): Promise<T> {
 // Low-level API access
 // ---------------------------------------------------------------------------
 
+// CourtListener is a shared public endpoint run by a nonprofit, so a 429 or a
+// 5xx is a "come back", not a verdict. Ported from mcp-housing.
+//
+// Retried: 429, 5xx, transport errors. NOT retried: other 4xx (a 401 without a
+// token, or a malformed query, answers identically however often it is asked)
+// and a non-JSON body.
+class HttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+class PermanentError extends Error {}
+
+const HTTP_ATTEMPTS = Number(process.env.CL_HTTP_ATTEMPTS ?? 3);
+const RETRY_BACKOFF_MS = [500, 2000];
+const RETRY_DEADLINE_MS = 40_000;
+const HTTP_TIMEOUT_MS = 15_000;
+
+function isRetryable(e: unknown): boolean {
+  if (e instanceof PermanentError) return false;
+  if (e instanceof HttpError) return e.status === 429 || e.status >= 500;
+  return true; // transport error or abort
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  let last: unknown;
+  for (let attempt = 0; attempt < HTTP_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      if (attempt === HTTP_ATTEMPTS - 1 || !isRetryable(e)) break;
+      const backoff = RETRY_BACKOFF_MS[attempt] ?? 2000;
+      if (Date.now() - started + backoff + HTTP_TIMEOUT_MS > RETRY_DEADLINE_MS) break;
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+  }
+  throw last;
+}
+
 type Row = Record<string, unknown>;
 
 type QueryValue = string | number | undefined | null;
@@ -187,13 +228,13 @@ async function readClResponse(res: { ok: boolean; status: number; text: () => Pr
     } catch {
       /* leave detail as the raw text slice */
     }
-    throw new Error(`CourtListener API request failed (HTTP ${res.status}): ${detail}`);
+    throw new HttpError(`CourtListener API request failed (HTTP ${res.status}): ${detail}`, res.status);
   }
 
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`CourtListener API returned a non-JSON response: ${text.slice(0, 300).trim()}`);
+    throw new PermanentError(`CourtListener API returned a non-JSON response: ${text.slice(0, 300).trim()}`);
   }
 }
 
@@ -213,8 +254,10 @@ async function clGet(
     if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
 
-  const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(15_000) }));
-  return readClResponse(res);
+  return withRetry(async () => {
+    const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
+    return readClResponse(res);
+  });
 }
 
 /**
@@ -231,10 +274,12 @@ async function clPost(
   headers["Content-Type"] = "application/json";
   const url = new URL(`${CL_API}${path}`);
 
-  const res = await throttled(() =>
-    fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }),
-  );
-  return readClResponse(res);
+  return withRetry(async () => {
+    const res = await throttled(() =>
+      fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }),
+    );
+    return readClResponse(res);
+  });
 }
 
 /** Pull the DRF `results` array out of a list/search envelope, defensively. */
