@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createServer, __test } from "../server.js";
+import { createServer, __test, clearClCache } from "../server.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures: CourtListener v4 response shapes, field names as the live API
@@ -319,6 +319,10 @@ async function call(name: string, args: Record<string, unknown>) {
 function payload(result: any) {
   return JSON.parse(result.content[0].text);
 }
+
+// The response cache lives for the process; without this a value cached by one
+// test is served to the next and the suite becomes order-dependent.
+beforeEach(() => clearClCache());
 
 beforeEach(async () => {
   fetchMock = vi.fn();
@@ -1010,5 +1014,35 @@ describe("ux fixes 1.1.1", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ count: 1, next: null, results: [] }));
     await call("oral_arguments", { q: "miranda", order_by: "newest" });
     expect(lastUrl().searchParams.get("order_by")).toBe("dateArgued desc");
+  });
+});
+
+describe("response cache", () => {
+  // Case law is immutable, so a repeat lookup in one session is a settled
+  // question. CourtListener runs on donated infrastructure, which makes not
+  // re-asking a courtesy as well as a speedup.
+  it("serves a repeated search without a second request", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ count: 0, results: [] }));
+    await call("opinion_search", { q: "roe" });
+    await call("opinion_search", { q: "roe" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a different query as a different key", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ count: 0, results: [] }));
+    await call("opinion_search", { q: "roe" });
+    await call("opinion_search", { q: "miranda" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a failure", async () => {
+    fetchMock.mockResolvedValue(textResponse("boom", { ok: false, status: 500 }));
+    const bad: any = await call("opinion_search", { q: "roe" });
+    expect(bad.isError).toBe(true);
+    const after = fetchMock.mock.calls.length;
+    fetchMock.mockResolvedValue(jsonResponse({ count: 0, results: [] }));
+    const good: any = await call("opinion_search", { q: "roe" });
+    expect(good.isError).toBeFalsy();
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(after);
   });
 });

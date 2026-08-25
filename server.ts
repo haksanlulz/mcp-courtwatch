@@ -243,21 +243,71 @@ async function readClResponse(res: { ok: boolean; status: number; text: () => Pr
  * Undefined/null/empty params are omitted. Set opts.requireAuth for endpoints
  * that 401 without a token (case_detail); it throws the token error pre-flight.
  */
+// Case law is immutable: an opinion published years ago does not change, and a
+// docket's history only grows. A repeat lookup inside a session is asking a
+// settled question, so a day is a conservative TTL. CourtListener is run by a
+// nonprofit on donated infrastructure, which makes not re-asking a courtesy as
+// well as a speedup.
+//
+// In memory, LRU-bounded, successful reads only -- caching an error would pin a
+// transient failure for the life of the process. CL_CACHE_TTL_MS=0 disables it.
+//
+// GET only. clPost is the citation-lookup endpoint, whose body is the real key
+// and whose results are already bounded per request.
+const CACHE_TTL_MS = Number(process.env.CL_CACHE_TTL_MS ?? 24 * 60 * 60 * 1000);
+const CACHE_MAX = Number(process.env.CL_CACHE_MAX ?? 300);
+const respCache = new Map<string, { at: number; value: unknown }>();
+
+function cacheGet(key: string): unknown | undefined {
+  if (CACHE_TTL_MS <= 0) return undefined;
+  const hit = respCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    respCache.delete(key);
+    return undefined;
+  }
+  respCache.delete(key); // re-insert so Map order is LRU
+  respCache.set(key, hit);
+  return hit.value;
+}
+
+function cacheSet(key: string, value: unknown): void {
+  if (CACHE_TTL_MS <= 0) return;
+  respCache.set(key, { at: Date.now(), value });
+  while (respCache.size > CACHE_MAX) {
+    const oldest = respCache.keys().next();
+    if (oldest.done) break;
+    respCache.delete(oldest.value);
+  }
+}
+
+/** Exported for tests: a cache that cannot be cleared makes the suite order-dependent. */
+export function clearClCache(): void {
+  respCache.clear();
+}
+
 async function clGet(
   path: string,
   params: Record<string, QueryValue> = {},
   opts: { requireAuth?: boolean } = {},
 ): Promise<unknown> {
   const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
+  // Auth is part of the key: an authenticated read can return fields an
+  // anonymous one does not, so the two must not share an entry.
+  const cacheKey = `${path}?${JSON.stringify(params)}|auth=${opts.requireAuth === true}`;
+  const hit = cacheGet(cacheKey);
+  if (hit !== undefined) return hit;
   const url = new URL(`${CL_API}${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
 
-  return withRetry(async () => {
+  const value = await withRetry(async () => {
     const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
     return readClResponse(res);
   });
+  cacheSet(cacheKey, value);
+  return value;
 }
 
 /**
