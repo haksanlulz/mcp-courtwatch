@@ -207,13 +207,29 @@ Every tool — including all four token-gated ones — has been run live against
 - `opinion_search`, `docket_lookup`, `cited_by`, and `oral_arguments` return one fixed `/search/` page of ~20 results; for more, pass `next_cursor` back as `cursor`. The endpoint ignores `page_size`, so `limit` caps at 20 rather than advertising an unreachable number.
 - `/docket-entries/` and `/opinions-cited/` use v4 cursor pagination, which often omits the total count: `total_entries` / `total_authorities` come back `null` with `total_reported: false` — that means "not reported", never zero.
 
-## Develop
+## Testing
 
 ```
-npm test         # vitest, fetch mocked with the documented response shapes (no token needed)
-npm run smoke    # one live call per tool (needs COURTLISTENER_API_TOKEN; skips cleanly without)
+npm test           # offline: vitest, fetch mocked with the documented response shapes (no token needed)
+npm run smoke      # live: one real call per tool (needs COURTLISTENER_API_TOKEN; skips cleanly without)
 npm run typecheck
+npm run verify:pack  # packs, installs into a temp project, spawns the bin shim over real stdio
 ```
+
+Two tiers, split by script rather than by marker. `npm test` is the offline suite; CI runs it plus `npm run typecheck`, `npm run build`, and `npm run verify:pack` (ci.yml jobs test, package, consume). `npm run smoke` is the live upstream contract, token-gated, and not run in CI.
+
+Counts as of 2026-09-11: 54 tests in 2 files (`npm test`), 1541 lines of app source, 1112 lines of test source.
+
+```
+find . -path ./node_modules -prune -o -path ./dist -prune -o -path ./test -prune -o \( -name '*.ts' -o -name '*.mjs' \) -print | grep -v smoke.ts | xargs wc -l
+find test -name '*.test.ts' | xargs wc -l
+```
+
+What the tests cover, by layer: `test/server.test.ts` drives every tool through a real MCP client over an in-memory transport with `fetch` stubbed, and asserts the outgoing request (path, query params, Authorization header, POST body) and the normalized response shape, plus the retry policy (5xx and 429 retried three times, 4xx and non-JSON not retried), the response cache, and the argument validators that must fail before any network call. `test/no-http-stack.test.ts` pins the dependency surface. The live smoke checks each tool once against the real API.
+
+Mutation probe (2026-09-11): raising `CITATION_TEXT_CAP` in `server.ts` from 64000 to 65000 turned exactly one test red, `citation_lookup > rejects oversized text before any network call instead of truncating`, 53 of 54 passing; the source was then restored.
+
+The 19 `toHaveBeenCalled*` assertions were audited and all kept: each one pins a named contract (no request leaves on a validation or missing-token error, retry count, cache hit, two-page walk). Policy: assert behavior and payloads, never merely that a function was called.
 
 ## AI assistance
 
