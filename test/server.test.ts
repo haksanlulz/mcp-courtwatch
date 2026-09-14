@@ -1096,6 +1096,65 @@ describe("docket_lookup fielded docket number", () => {
   });
 });
 
+describe("a rejected token", () => {
+  // token() writes careful setup guidance when COURTLISTENER_API_TOKEN is
+  // UNSET. optionalToken() checks truthiness only, so a wrong, expired, or
+  // quote/newline-mangled value passes, goes out on the wire, and the user who
+  // completed the setup step is handed DRF's bare "Invalid token."
+  it("a 401 WITH a token attached names the variable and the regeneration step", async () => {
+    process.env.COURTLISTENER_API_TOKEN = "stale-token-value";
+    fetchMock.mockResolvedValue(
+      textResponse(JSON.stringify({ detail: "Invalid token." }), { ok: false, status: 401 }),
+    );
+
+    const res: any = await call("opinion_search", { q: "miranda" });
+    const text = res.content[0].text as string;
+
+    expect(res.isError).toBe(true);
+    expect(text).toContain("401");
+    expect(text).toContain("Invalid token.");
+    expect(text).toContain("COURTLISTENER_API_TOKEN");
+    expect(text).toMatch(/regenerate/i);
+    // The token is never echoed, whole or in part.
+    expect(text).not.toContain("stale-token-value");
+    expect(text).not.toContain("stale-token");
+    // A 401 is not a wobble: it is not retried.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 401 with NO token attached is left as the plain upstream error", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    fetchMock.mockResolvedValue(
+      textResponse(JSON.stringify({ detail: "Authentication credentials were not provided." }), {
+        ok: false,
+        status: 401,
+      }),
+    );
+
+    const res: any = await call("opinion_search", { q: "miranda" });
+    const text = res.content[0].text as string;
+
+    expect(res.isError).toBe(true);
+    expect(text).not.toMatch(/regenerate/i);
+    expect(text).not.toMatch(/token WAS sent/i);
+  });
+
+  it("the POST path carries the same guidance", async () => {
+    process.env.COURTLISTENER_API_TOKEN = "stale-token-value";
+    fetchMock.mockResolvedValue(
+      textResponse(JSON.stringify({ detail: "Invalid token." }), { ok: false, status: 401 }),
+    );
+
+    const res: any = await call("citation_lookup", { text: "410 U.S. 113" });
+    const text = res.content[0].text as string;
+
+    expect(lastInit().method).toBe("POST");
+    expect(text).toContain("COURTLISTENER_API_TOKEN");
+    expect(text).toMatch(/regenerate/i);
+    expect(text).not.toContain("stale-token-value");
+  });
+});
+
 describe("case_detail id validation", () => {
   // The id is interpolated into the request path; the three sibling id-taking
   // tools already reject a negative or fractional one pre-flight.

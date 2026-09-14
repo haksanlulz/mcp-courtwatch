@@ -247,7 +247,10 @@ type QueryValue = string | number | undefined | null;
  * non-2xx, parse JSON on success, and reject non-JSON bodies (HTML error pages
  * / proxy interstitials arrive as non-JSON with a 200). Shared by clGet/clPost.
  */
-async function readClResponse(res: { ok: boolean; status: number; text: () => Promise<string> }): Promise<unknown> {
+async function readClResponse(
+  res: { ok: boolean; status: number; text: () => Promise<string> },
+  opts: { tokenAttached?: boolean } = {},
+): Promise<unknown> {
   const text = await res.text();
 
   if (!res.ok) {
@@ -259,7 +262,21 @@ async function readClResponse(res: { ok: boolean; status: number; text: () => Pr
     } catch {
       /* leave detail as the raw text slice */
     }
-    throw new HttpError(`CourtListener API request failed (HTTP ${res.status}): ${detail}`, res.status);
+    let message = `CourtListener API request failed (HTTP ${res.status}): ${detail}`;
+    // A 401 with no token is a setup step, and token() writes careful guidance
+    // for it before any request leaves. A 401 WITH a token is the same setup
+    // step failing later — optionalToken() only checks that the variable is
+    // non-empty, so a wrong, expired, or quote/newline-mangled value sails
+    // through and the user who did the setup gets DRF's bare "Invalid token."
+    // Never echo the token or any part of it.
+    if (res.status === 401 && opts.tokenAttached) {
+      message +=
+        ` A token WAS sent with this request, so CourtListener is rejecting the one you have.` +
+        ` Check COURTLISTENER_API_TOKEN for a copy/paste error (surrounding quotes, a trailing` +
+        ` newline, or the word "Token" included in the value), and regenerate it from your` +
+        ` CourtListener profile's API page if it is stale (${TOKEN_SIGNUP_URL}).`;
+    }
+    throw new HttpError(message, res.status);
   }
 
   try {
@@ -335,7 +352,7 @@ async function clGet(
 
   const value = await withRetry(async () => {
     const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
-    return readClResponse(res);
+    return readClResponse(res, { tokenAttached: headers.Authorization !== undefined });
   });
   cacheSet(cacheKey, value);
   return value;
@@ -359,7 +376,7 @@ async function clPost(
     const res = await throttled(() =>
       fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }),
     );
-    return readClResponse(res);
+    return readClResponse(res, { tokenAttached: headers.Authorization !== undefined });
   });
 }
 
