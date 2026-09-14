@@ -1097,6 +1097,45 @@ describe("docket_lookup fielded docket number", () => {
   });
 });
 
+// The same HTTP 500, one argument over. Sanitizing only docket_number left the
+// free-text q of the three search tools passing a dangling backslash straight
+// through, and 500 is retryable here. Live 2026-09-14:
+//   /search/?type=o&q=eviction\   -> HTTP 500   (three times, with the retries)
+//   /search/?type=o&q=eviction    -> HTTP 200
+//   /search/?type=o&q=eviction\\  -> HTTP 200
+describe("free-text q never leaves with a dangling escape", () => {
+  it.each([
+    ["opinion_search", { q: "eviction\\" }],
+    ["docket_lookup", { q: "eviction\\" }],
+    ["oral_arguments", { q: "eviction\\" }],
+  ])("drops the trailing backslash %s would otherwise send", async (tool, args) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    await call(tool, args);
+    const q = lastUrl().searchParams.get("q")!;
+    expect(q.endsWith("\\")).toBe(false);
+    expect(q).toBe("eviction");
+  });
+
+  it("keeps a balanced pair, which is a real escaped backslash (live: HTTP 200)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    await call("opinion_search", { q: "eviction\\\\" });
+    expect(lastUrl().searchParams.get("q")).toBe("eviction\\\\");
+  });
+
+  it("leaves an interior escape alone — it has something to escape", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    await call("opinion_search", { q: 'caseName:\\"Roe\\" eviction' });
+    expect(lastUrl().searchParams.get("q")).toBe('caseName:\\"Roe\\" eviction');
+  });
+
+  it("cleans the free-text half before it is joined to the fielded operator", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    await call("docket_lookup", { q: "eviction\\", docket_number: "1:20-cv-03590" });
+    // Without the clean, the backslash escapes the separating space instead.
+    expect(lastUrl().searchParams.get("q")).toBe('eviction docketNumber:"1:20-cv-03590"');
+  });
+});
+
 // An /audio/{id}/ record, field names as the live API serves them
 // (unauthenticated, 2026-09-14). Audio 106247 is a 1,051-second circuit
 // argument whose real transcript is 13,974 characters; the text is abbreviated

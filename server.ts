@@ -979,6 +979,29 @@ function normDate(v: unknown, label: string): string | undefined {
   return s;
 }
 
+/**
+ * Drop a dangling backslash from an outgoing query.
+ *
+ * A backslash with nothing left to escape makes CourtListener's query parser
+ * answer HTTP 500 — verified live 2026-09-14:
+ *   /search/?type=o&q=eviction\   -> HTTP 500 {"detail":"Internal Server Error..."}
+ *   /search/?type=o&q=eviction    -> HTTP 200
+ *   /search/?type=o&q=eviction\\  -> HTTP 200  (a balanced pair is a real escaped backslash)
+ * and a 500 is retryable here, so one trailing backslash in a free-text query
+ * becomes three 500s against a nonprofit's search cluster, on the most-used tool
+ * in this server.
+ *
+ * Only the trailing run is touched, and only its odd character: a balanced pair
+ * escapes a literal backslash and is part of what the caller asked for. Interior
+ * escapes (`\"`, `\:`) are left alone — they have something to escape.
+ */
+function stripDanglingEscape(q: string): string {
+  const run = /\\+$/.exec(q);
+  if (!run) return q;
+  const balanced = run[0].length - (run[0].length % 2);
+  return q.slice(0, q.length - run[0].length) + "\\".repeat(balanced);
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -1281,7 +1304,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
 
   const json = await clGet("/search/", {
-    q,
+    q: stripDanglingEscape(q),
     type: SEARCH_TYPE_OPINION,
     court: court ?? undefined,
     filed_after: filedAfter,
@@ -1333,7 +1356,13 @@ async function docketLookup(args: Row): Promise<unknown> {
   // real docket number contains either character, so nothing that could match
   // is lost.
   const fielded = docketNumber ? `docketNumber:"${docketNumber.replace(/["\\]/g, "")}"` : null;
-  const effectiveQ = [q, fielded].filter(Boolean).join(" ").trim();
+  // The free-text half gets the treatment opinion_search's q gets: a dangling
+  // backslash draws the same HTTP 500 from the query parser, and here it would
+  // also escape the space before the fielded operator rather than end a value.
+  // `fielded` cannot end in a backslash — they are stripped above — so cleaning
+  // the free-text half is enough to keep the joined query from ending in one.
+  const freeText = q ? stripDanglingEscape(q) : null;
+  const effectiveQ = [freeText, fielded].filter(Boolean).join(" ").trim();
 
   const json = await clGet("/search/", {
     q: effectiveQ || undefined,
@@ -1654,7 +1683,7 @@ async function oralArguments(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
 
   const json = await clGet("/search/", {
-    q,
+    q: stripDanglingEscape(q),
     type: SEARCH_TYPE_ORAL_ARGUMENT,
     court: court ?? undefined,
     order_by: OA_ORDER_BY[orderKey],
