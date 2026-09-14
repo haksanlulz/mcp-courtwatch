@@ -1427,6 +1427,33 @@ describe("an unexpected response envelope", () => {
     }
   });
 
+  // The response cache sat above the validation: clGet wrote every HTTP success
+  // to it before any caller looked at the body, so the round that turned an
+  // unexpected envelope into a thrown error also gave the cache something to
+  // pin. One bad body then answered every identical query for CL_CACHE_TTL_MS
+  // — 24 hours by default — with no network call, long after CourtListener had
+  // gone back to normal.
+  it("is never cached, so recovery upstream is visible immediately", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: "ok" }));
+    const first: any = await call("opinion_search", { q: "eviction" });
+    expect(first.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Same arguments, so a cached entry would be served here instead.
+    fetchMock.mockResolvedValue(jsonResponse(SEARCH_OPINION));
+    const second: any = await call("opinion_search", { q: "eviction" });
+    expect(second.isError, "the bad body was pinned in the cache").toBeFalsy();
+    expect(fetchMock, "the repeat query never reached the network").toHaveBeenCalledTimes(2);
+    expect(payload(second).returned).toBe(1);
+  });
+
+  it("a good body is still cached — the fix must not disable the cache", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(SEARCH_OPINION));
+    await call("opinion_search", { q: "cacheable" });
+    await call("opinion_search", { q: "cacheable" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("citation_lookup still accepts its bare-array response, which is its real shape", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(CITATION_LOOKUP_MIXED));
     const body = payload(await call("citation_lookup", { text: "410 U.S. 113 and 999 U.S. 9999" }));

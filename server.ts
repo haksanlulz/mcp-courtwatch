@@ -353,7 +353,7 @@ export function clearClCache(): void {
 async function clGet(
   path: string,
   params: Record<string, QueryValue> = {},
-  opts: { requireAuth?: boolean } = {},
+  opts: { requireAuth?: boolean; expectResults?: string } = {},
 ): Promise<unknown> {
   const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
   // Auth is part of the key: an authenticated read can return fields an
@@ -370,6 +370,17 @@ async function clGet(
     const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
     return readClResponse(res, { tokenAttached: headers.Authorization !== undefined });
   });
+  // Validate BEFORE writing the cache. extractResults throws on an unexpected
+  // envelope, and the cache above this line would otherwise pin that one bad
+  // body for CACHE_TTL_MS (24h by default): every identical query would keep
+  // throwing, with zero network calls, long after CourtListener went back to
+  // normal. The comment on the cache says "successful reads only -- caching an
+  // error would pin a transient failure for the life of the process", and a
+  // body that parses as JSON but carries no `results` became exactly that the
+  // moment an unexpected envelope stopped being reported as zero matches.
+  //
+  // extractResults is pure, so the caller's own call is left in place.
+  if (opts.expectResults !== undefined) extractResults(value, opts.expectResults);
   cacheSet(cacheKey, value);
   return value;
 }
@@ -1308,16 +1319,23 @@ async function opinionSearch(args: Row): Promise<unknown> {
   }
   const cursor = str(args.cursor);
 
-  const json = await clGet("/search/", {
-    q: stripDanglingEscape(q),
-    type: SEARCH_TYPE_OPINION,
-    court: court ?? undefined,
-    filed_after: filedAfter,
-    filed_before: filedBefore,
-    order_by,
-    cursor: cursor ?? undefined,
-  });
-  const results = extractResults(json, "opinion_search (/search/?type=o)").slice(0, limit).map(normalizeOpinionHit);
+  // Named once and handed to both: clGet validates the envelope before caching
+  // it, and the result set is extracted here.
+  const source = "opinion_search (/search/?type=o)";
+  const json = await clGet(
+    "/search/",
+    {
+      q: stripDanglingEscape(q),
+      type: SEARCH_TYPE_OPINION,
+      court: court ?? undefined,
+      filed_after: filedAfter,
+      filed_before: filedBefore,
+      order_by,
+      cursor: cursor ?? undefined,
+    },
+    { expectResults: source },
+  );
+  const results = extractResults(json, source).slice(0, limit).map(normalizeOpinionHit);
   return {
     query: {
       q,
@@ -1369,13 +1387,18 @@ async function docketLookup(args: Row): Promise<unknown> {
   const freeText = q ? stripDanglingEscape(q) : null;
   const effectiveQ = [freeText, fielded].filter(Boolean).join(" ").trim();
 
-  const json = await clGet("/search/", {
-    q: effectiveQ || undefined,
-    type: SEARCH_TYPE_DOCKET,
-    court: court ?? undefined,
-    cursor: cursor ?? undefined,
-  });
-  const results = extractResults(json, "docket_lookup (/search/?type=r)").slice(0, limit).map(normalizeDocketHit);
+  const source = "docket_lookup (/search/?type=r)";
+  const json = await clGet(
+    "/search/",
+    {
+      q: effectiveQ || undefined,
+      type: SEARCH_TYPE_DOCKET,
+      court: court ?? undefined,
+      cursor: cursor ?? undefined,
+    },
+    { expectResults: source },
+  );
+  const results = extractResults(json, source).slice(0, limit).map(normalizeDocketHit);
   return {
     query: { q: q ?? null, docket_number: docketNumber ?? null, court: court ?? null, cursor: cursor ?? null },
     total_matches: num((json as Row).count),
@@ -1410,8 +1433,13 @@ async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Pr
   const all: Row[] = [];
   let complete = false;
   for (let page = 1; page <= MAX_COURT_PAGES; page++) {
-    const json = await clGet("/courts/", { jurisdiction: jurisdiction ?? undefined, page });
-    all.push(...extractResults(json, "court_list (/courts/)"));
+    const source = "court_list (/courts/)";
+    const json = await clGet(
+      "/courts/",
+      { jurisdiction: jurisdiction ?? undefined, page },
+      { expectResults: source },
+    );
+    all.push(...extractResults(json, source));
     const hasNext = str((json as Row).next) != null;
     if (!hasNext) {
       complete = true;
@@ -1555,11 +1583,16 @@ async function judgeLookup(args: Row): Promise<unknown> {
   }
   const limit = clampLimit(args.limit, 10);
 
-  const json = await clGet("/people/", {
-    name_last: nameLast ?? undefined,
-    name_first: nameFirst ?? undefined,
-  });
-  const results = extractResults(json, "judge_lookup (/people/)").slice(0, limit).map(normalizeJudge);
+  const source = "judge_lookup (/people/)";
+  const json = await clGet(
+    "/people/",
+    {
+      name_last: nameLast ?? undefined,
+      name_first: nameFirst ?? undefined,
+    },
+    { expectResults: source },
+  );
+  const results = extractResults(json, source).slice(0, limit).map(normalizeJudge);
   return {
     query: { name_last: nameLast ?? null, name_first: nameFirst ?? null },
     returned: results.length,
@@ -1579,13 +1612,18 @@ async function citedBy(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
 
   // The cites:() fielded operator (verified live 2026-08-23; keyless).
-  const json = await clGet("/search/", {
-    q: `cites:(${opinionId})`,
-    type: SEARCH_TYPE_OPINION,
-    order_by,
-    cursor: cursor ?? undefined,
-  });
-  const results = extractResults(json, "cited_by (/search/?type=o)").slice(0, limit).map(normalizeOpinionHit);
+  const source = "cited_by (/search/?type=o)";
+  const json = await clGet(
+    "/search/",
+    {
+      q: `cites:(${opinionId})`,
+      type: SEARCH_TYPE_OPINION,
+      order_by,
+      cursor: cursor ?? undefined,
+    },
+    { expectResults: source },
+  );
+  const results = extractResults(json, source).slice(0, limit).map(normalizeOpinionHit);
   return {
     query: { opinion_id: opinionId, order_by: orderKey, cursor: cursor ?? null },
     total_citing: num((json as Row).count),
@@ -1606,12 +1644,13 @@ async function caseAuthorities(args: Row): Promise<unknown> {
   const limit = clampLimit(args.limit, MAX_RESULTS);
 
   // /opinions-cited/ answers 401 without a token (verified live 2026-08-23).
+  const source = "case_authorities (/opinions-cited/)";
   const json = await clGet(
     "/opinions-cited/",
     { citing_opinion: opinionId, page_size: limit },
-    { requireAuth: true },
+    { requireAuth: true, expectResults: source },
   );
-  const results = extractResults(json, "case_authorities (/opinions-cited/)").slice(0, limit).map(normalizeCitedPair);
+  const results = extractResults(json, source).slice(0, limit).map(normalizeCitedPair);
   const totalAuthorities = num((json as Row).count);
   return {
     query: { opinion_id: opinionId },
@@ -1645,12 +1684,13 @@ async function docketEntries(args: Row): Promise<unknown> {
   // The filter parameter is `docket`, not `docket_id` — the API 400s with
   // unknown_params otherwise (found by the live rung 2026-08-23; an unauth
   // probe could not see it, since auth is checked before params).
+  const source = "docket_entries (/docket-entries/)";
   const json = await clGet(
     "/docket-entries/",
     { docket: docketId, page_size: limit, cursor: cursor ?? undefined },
-    { requireAuth: true },
+    { requireAuth: true, expectResults: source },
   );
-  const results = extractResults(json, "docket_entries (/docket-entries/)").slice(0, limit).map(normalizeDocketEntry);
+  const results = extractResults(json, source).slice(0, limit).map(normalizeDocketEntry);
   const totalEntries = num((json as Row).count);
   return {
     query: { docket_id: docketId, cursor: cursor ?? null },
@@ -1687,16 +1727,21 @@ async function oralArguments(args: Row): Promise<unknown> {
   const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
   const cursor = str(args.cursor);
 
-  const json = await clGet("/search/", {
-    q: stripDanglingEscape(q),
-    type: SEARCH_TYPE_ORAL_ARGUMENT,
-    court: court ?? undefined,
-    order_by: OA_ORDER_BY[orderKey],
-    argued_after: arguedAfter,
-    argued_before: arguedBefore,
-    cursor: cursor ?? undefined,
-  });
-  const results = extractResults(json, "oral_arguments (/search/?type=oa)").slice(0, limit).map(normalizeOralArgumentHit);
+  const source = "oral_arguments (/search/?type=oa)";
+  const json = await clGet(
+    "/search/",
+    {
+      q: stripDanglingEscape(q),
+      type: SEARCH_TYPE_ORAL_ARGUMENT,
+      court: court ?? undefined,
+      order_by: OA_ORDER_BY[orderKey],
+      argued_after: arguedAfter,
+      argued_before: arguedBefore,
+      cursor: cursor ?? undefined,
+    },
+    { expectResults: source },
+  );
+  const results = extractResults(json, source).slice(0, limit).map(normalizeOralArgumentHit);
 
   // Transcript availability is NOT in the search index, and /audio/ has no
   // batch id filter — id__in is rejected ("Unknown filter parameters are not
