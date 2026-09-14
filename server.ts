@@ -436,6 +436,31 @@ function firstSnippet(opinions: unknown): string | null {
   return null;
 }
 
+/**
+ * Pull the opinion ids out of a type=o search hit's nested `opinions[]`.
+ *
+ * This is the only KEYLESS route to an opinion id, and cited_by — the free
+ * citator — takes an opinion id, not a cluster id. The other documented route
+ * (case_detail's sub_opinion_ids) reads /clusters/{id}/, which answers 401
+ * without a token, so a token-less caller could not reach the keyless feature.
+ * Entries with no id are dropped: they cannot be passed to anything.
+ *
+ * Live shape (unauthenticated, 2026-09-14):
+ *   /search/?type=o&q=obergefell&court=scotus -> results[0].cluster_id 8174675,
+ *   opinions [{"id": 8136452, "type": "lead-opinion", "snippet": "...", ...}]
+ */
+function normalizeHitOpinions(v: unknown): Array<{ id: number; type: string | null }> {
+  if (!Array.isArray(v)) return [];
+  const out: Array<{ id: number; type: string | null }> = [];
+  for (const o of v) {
+    if (o && typeof o === "object") {
+      const id = num((o as Row).id);
+      if (id != null) out.push({ id, type: str((o as Row).type) });
+    }
+  }
+  return out;
+}
+
 /** Pull a trailing numeric id out of a resource URL (…/opinions/12345/). */
 function idFromUrl(v: unknown): number | null {
   const s = str(v);
@@ -514,6 +539,8 @@ function normalizeOpinionHit(r: Row): Record<string, unknown> {
     cite_count: num(r.citeCount),
     status: str(r.status),
     snippet: firstSnippet(r.opinions) ?? str(r.snippet),
+    // The opinion ids inside this case, keyless. Pass one to cited_by.
+    opinions: normalizeHitOpinions(r.opinions),
     cluster_id: num(r.cluster_id),
     docket_id: num(r.docket_id),
     absolute_url: fullUrl(r.absolute_url),
@@ -748,7 +775,9 @@ const TOOLS: Tool[] = [
     description:
       "Full-text search of U.S. case law / court opinions (CourtListener type=o). " +
       "Returns the top matching page (up to `limit`) with case name, court, date filed, " +
-      "citations, docket number, a snippet, citation count, and a link. Works without a " +
+      "citations, docket number, a snippet, citation count, and a link. Each hit also " +
+      "carries `opinions`: the ids of the opinions in that case, which is the keyless " +
+      "input to cited_by. Works without a " +
       "token; set COURTLISTENER_API_TOKEN for a higher rate limit.",
     inputSchema: {
       type: "object",
@@ -874,15 +903,21 @@ const TOOLS: Tool[] = [
     name: "cited_by",
     description:
       "Every opinion that CITES a given opinion — the free version of a citator check ('is this " +
-      "case still being relied on, and by whom'). Pass an opinion id (from case_detail's " +
-      "sub_opinion_ids, or an opinion_search hit's cluster via case_detail). Returns citing " +
+      "case still being relied on, and by whom'). Pass an opinion id. The keyless way to get one " +
+      "is an opinion_search hit's `opinions[].id`; case_detail's sub_opinion_ids also gives it, " +
+      "but that endpoint needs a token, so use opinion_search when you have none. Returns citing " +
       "opinions newest-first or most-cited-first with the same fields as opinion_search. Works " +
       "without a token. NOTE: this reports who cites the case; it does NOT classify the treatment " +
       "(followed/distinguished/overruled) — read the citing opinions.",
     inputSchema: {
       type: "object",
       properties: {
-        opinion_id: { type: "integer", description: "Numeric OPINION id (not a cluster id). case_detail on a cluster lists its sub_opinion_ids." },
+        opinion_id: {
+          type: "integer",
+          description:
+            "Numeric OPINION id (not a cluster id). Keyless source: an opinion_search hit's opinions[].id. " +
+            "With a token, case_detail on a cluster also lists its sub_opinion_ids.",
+        },
         order_by: { type: "string", enum: ["newest", "oldest", "most_cited", "relevance"], description: "Sort order (default newest)." },
         limit: { type: "integer", description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}).` },
         cursor: { type: "string", description: "Opaque cursor from a previous response's next_cursor." },

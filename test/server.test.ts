@@ -961,6 +961,100 @@ describe("oral_arguments", () => {
   });
 });
 
+// A type=o hit exactly as the live API serves it (unauthenticated,
+// /search/?type=o&q=obergefell&court=scotus, 2026-09-14): opinions[] entries
+// carry many keys, and the two that matter downstream are id and type.
+const SEARCH_OPINION_LIVE_SHAPE = {
+  count: 46,
+  next: null,
+  previous: null,
+  results: [
+    {
+      absolute_url: "/opinion/8174675/obergefell-v-hodges/",
+      caseName: "Obergefell v. Hodges",
+      caseNameFull: "James OBERGEFELL v. Richard HODGES, Director, Ohio Department of Health",
+      court: "Supreme Court of the United States",
+      court_id: "scotus",
+      dateFiled: "2015-06-26",
+      citation: [],
+      citeCount: 0,
+      cluster_id: 8174675,
+      status: "Published",
+      opinions: [
+        {
+          author_id: null,
+          cites: [],
+          download_url: null,
+          id: 8136452,
+          joined_by_ids: [],
+          local_path: null,
+          meta: { timestamp: "2024-06-25T03:02:12.978753Z", date_created: "2022-09-09T17:53:37.932738Z" },
+          ordering_key: null,
+          per_curiam: false,
+          sha1: "",
+          snippet: "\nMotion of Theodore Coates for leave to file a brief as amicus curiaedenied.\n",
+          type: "lead-opinion",
+        },
+      ],
+    },
+  ],
+};
+
+describe("opinion_search carries the opinion ids", () => {
+  // cited_by is billed as the free, keyless citator and it takes an OPINION id.
+  // The only other documented route to one was case_detail's sub_opinion_ids,
+  // which reads a 401-gated endpoint — so without this field a token-less
+  // caller could not reach the keyless feature at all.
+  it("surfaces opinions[].id and .type from a live-shaped hit", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN; // the point is that this works keyless
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_OPINION_LIVE_SHAPE));
+    const body = payload(await call("opinion_search", { q: "obergefell", court: "scotus" }));
+
+    expect(lastInit().headers.Authorization).toBeUndefined();
+    expect(body.results[0].cluster_id).toBe(8174675);
+    expect(body.results[0].opinions).toEqual([{ id: 8136452, type: "lead-opinion" }]);
+    // The snippet still comes out of the same array; both readers coexist.
+    expect(body.results[0].snippet).toContain("amicus curiae");
+  });
+
+  it("feeds cited_by directly: the id from a search hit is the id it queries on", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_OPINION_LIVE_SHAPE));
+    const search = payload(await call("opinion_search", { q: "obergefell" }));
+    const opinionId = search.results[0].opinions[0].id;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 174, next: null, results: [] }));
+    const citing = payload(await call("cited_by", { opinion_id: opinionId }));
+
+    expect(lastUrl().searchParams.get("q")).toBe(`cites:(${opinionId})`);
+    expect(lastInit().headers.Authorization).toBeUndefined(); // still keyless
+    expect(citing.total_citing).toBe(174);
+  });
+
+  it("drops opinions[] entries with no id, and survives a missing array", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 2,
+        next: null,
+        results: [
+          { caseName: "No opinions key", cluster_id: 1 },
+          { caseName: "Junk entries", cluster_id: 2, opinions: [null, "x", { type: "lead-opinion" }, { id: 7 }] },
+        ],
+      }),
+    );
+    const body = payload(await call("opinion_search", { q: "x" }));
+    expect(body.results[0].opinions).toEqual([]);
+    expect(body.results[1].opinions).toEqual([{ id: 7, type: null }]);
+  });
+
+  it("names opinion_search as the keyless source in cited_by's description", async () => {
+    const { tools } = await client.listTools();
+    const citedBy = tools.find((t) => t.name === "cited_by")!;
+    expect(citedBy.description).toContain("opinion_search");
+    expect(JSON.stringify(citedBy.inputSchema)).toContain("opinion_search");
+  });
+});
+
 describe("docket_lookup fielded docket number", () => {
   it("routes docket_number through the docketNumber:() operator with quotes stripped", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ count: 6, next: null, results: [] }));

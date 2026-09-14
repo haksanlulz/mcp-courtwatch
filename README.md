@@ -8,13 +8,13 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `opinion_search` | `q` (required), `court`, `filed_after`, `filed_before`, `order_by`, `limit`, `cursor` | Full-text case-law search (`/search/?type=o`). Per hit: case name, court, date filed, citations, docket number, snippet, citation count, cluster id, link. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
+| `opinion_search` | `q` (required), `court`, `filed_after`, `filed_before`, `order_by`, `limit`, `cursor` | Full-text case-law search (`/search/?type=o`). Per hit: case name, court, date filed, citations, docket number, snippet, citation count, cluster id, link, and `opinions` — the `{id, type}` of each opinion in the case, which is the keyless input to `cited_by`. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
 | `docket_lookup` | `q` and/or `docket_number` (at least one), `court`, `limit`, `cursor` | Docket search (`/search/?type=r`). Per hit: case name, court, docket number, filed/terminated dates, nature of suit, docket id, link. Also returns `next_cursor` (pass it back as `cursor` for the next page). |
 | `court_list` | `jurisdiction`, `q`, `limit` | Courts and their ids (`/courts/`), the values used as the `court` filter above. Optional jurisdiction filter and a name substring filter applied across the full courts table (paged server-side). |
 | `case_detail` | `id` (required), `type` (`cluster` or `opinion`) | Full case by id. A cluster (`/clusters/{id}/`) gives case name, citations, date, judges, and its opinion ids. An opinion (`/opinions/{id}/`) gives the full opinion text. Requires a token. |
 | `citation_lookup` | `text` (required) | Verify citations (`POST /citation-lookup/`). Pass free text (a brief, a draft) or a single citation string; every citation recognized is checked against the database of real cases. Per citation: `FOUND` (with matched case name, date, link) or an explicit `NOT_FOUND` / `UNKNOWN_REPORTER` flag. Requires a token. |
 | `judge_lookup` | `name_last` and/or `name_first` (at least one), `limit` | Judges / people (`/people/`). Per person: id, assembled name, birth and death dates and place, gender, count of positions on file. |
-| `cited_by` | `opinion_id` (required), `order_by`, `limit`, `cursor` | Every opinion citing a given opinion, via the `cites:()` search operator — a free citator check (who still relies on this case). Newest-first by default. No treatment classification. Keyless. |
+| `cited_by` | `opinion_id` (required), `order_by`, `limit`, `cursor` | Every opinion citing a given opinion, via the `cites:()` search operator — a free citator check (who still relies on this case). Newest-first by default. No treatment classification. Keyless, and the id comes from `opinion_search`'s `opinions[].id` so the whole chain works without a token (`case_detail`'s `sub_opinion_ids` is the token-gated alternative). |
 | `case_authorities` | `opinion_id` (required), `limit` | The authorities an opinion relies on (its table of authorities) with a per-authority citation depth, via `/opinions-cited/`. Token required. |
 | `docket_entries` | `docket_id` (required), `limit`, `cursor` | A federal docket's filing history from the RECAP archive: numbered entries, dates, descriptions, archived PACER documents with page counts and availability. Token required. RECAP holds what its users bought from PACER. |
 | `oral_arguments` | `q` (required), `court`, `order_by` (relevance/newest/oldest), `argued_after`, `argued_before`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, MP3 link. Keyless. |
@@ -47,6 +47,7 @@ Sources:
 | `citation` (array) | `citations` | opinion_search |
 | `docketNumber` | `docket_number` | search hits |
 | `opinions[].snippet` | `snippet` | opinion_search |
+| `opinions[]` (`id`, `type`) | `opinions` (array of `{id, type}`) | opinion_search, cited_by |
 | `cluster_id`, `docket_id` | `cluster_id`, `docket_id` | search hits |
 | `absolute_url` / `docket_absolute_url` | `absolute_url` (made a full link) | search hits |
 | `dateTerminated`, `suitNature` | `date_terminated`, `nature_of_suit` | docket_lookup |
@@ -104,14 +105,14 @@ Without the token, `opinion_search`, `docket_lookup`, `court_list`, `judge_looku
 
 ## Example
 
-Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "order_by": "most_cited", "limit": 1 }` (output captured live, 2026-07; counts drift as CourtListener grows):
+Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "order_by": "most_cited", "limit": 1 }` (output captured live, 2026-09-14; counts drift as CourtListener grows):
 
 ```json
 {
   "query": { "q": "warrantless search", "court": "scotus", "filed_after": null, "filed_before": null, "order_by": "most_cited", "cursor": null },
   "total_matches": 282,
   "returned": 1,
-  "next_cursor": "cz01MTI3JnM9MTA5NjkzJnQ9byZkPTIwMjYtMDctMTcmcD0y",
+  "next_cursor": "cz01MTM2JnM9MTA4NTcxJnQ9byZkPTIwMjYtMDktMTQmcD0y",
   "results": [
     {
       "case_name": "Monell v. New York City Dept. of Social Servs.",
@@ -120,9 +121,10 @@ Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "ord
       "date_filed": "1978-06-06",
       "citations": ["56 L. Ed. 2d 611", "98 S. Ct. 2018", "436 U.S. 658", "1978 U.S. LEXIS 100", "16 Empl. Prac. Dec. (CCH) 8345", "17 Fair Empl. Prac. Cas. (BNA) 873"],
       "docket_number": "75-1914",
-      "cite_count": 42298,
+      "cite_count": 42979,
       "status": "Published",
-      "snippet": "436 U.S. 658 (1978)\nMONELL ET AL.\nv.\nDEPARTMENT OF SOCIAL SERVICES OF THE CITY OF NEW YORK ET AL.\nNo. 75-1914.\nSupreme Court of the United States. ...",
+      "snippet": "\n436 U.S. 658 (1978)\nMONELL ET AL.\nv.\nDEPARTMENT OF SOCIAL SERVICES OF THE CITY OF NEW YORK ET AL.\nNo. 75-1914.\nSupreme Court of the United States. ...",
+      "opinions": [{ "id": 109881, "type": "combined-opinion" }],
       "cluster_id": 109881,
       "docket_id": 266243,
       "absolute_url": "https://www.courtlistener.com/opinion/109881/monell-v-new-york-city-dept-of-social-servs/"
@@ -134,7 +136,7 @@ Call `opinion_search` with `{ "q": "warrantless search", "court": "scotus", "ord
 
 The `disclaimer` is attached to every response, in the payload rather than only in the tool description — a model composing an answer has the payload in hand and may no longer be holding the description.
 
-Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text. For the next page, pass `next_cursor` back as `cursor`.
+Then pass the `cluster_id` to `case_detail` (`{ "id": 109881 }`) for the citations, judges, and opinion ids, or `case_detail` with `{ "id": <opinion id>, "type": "opinion" }` for the full opinion text. Both need a token. Without one, `opinions[0].id` from the hit above goes straight to `cited_by`. For the next page, pass `next_cursor` back as `cursor`.
 
 ## Example: verifying citations before filing
 
