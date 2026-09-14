@@ -1571,6 +1571,46 @@ describe("a rejected token", () => {
   });
 });
 
+// The .mcpb manifest declares ${user_config.courtlistener_api_token} for an
+// OPTIONAL field. The bundle probe models a host that drops the entry when the
+// user leaves it blank; nothing in the mcpb package documents that a host must.
+// A host that substitutes nothing sends the placeholder verbatim.
+describe("an unsubstituted user_config placeholder is not a token", () => {
+  const PLACEHOLDER = "${user_config.courtlistener_api_token}";
+
+  it("is not sent as an Authorization header", async () => {
+    process.env.COURTLISTENER_API_TOKEN = PLACEHOLDER;
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_OPINION));
+
+    const res: any = await call("opinion_search", { q: "miranda" });
+
+    expect(res.isError).toBeFalsy();
+    // Sending it 401s every keyless tool — and the 401 branch would then tell
+    // the user their token is stale when they never set one.
+    expect(lastInit().headers.Authorization).toBeUndefined();
+  });
+
+  it("makes a token-gated tool report the setup step, not a 401", async () => {
+    process.env.COURTLISTENER_API_TOKEN = PLACEHOLDER;
+
+    const res: any = await call("case_detail", { id: 109881 });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a real token is still attached — the guard matches only a bare placeholder", async () => {
+    for (const value of ["abc123", "${partial", "x${user_config.courtlistener_api_token}"]) {
+      clearClCache();
+      process.env.COURTLISTENER_API_TOKEN = value;
+      fetchMock.mockResolvedValueOnce(jsonResponse(SEARCH_OPINION));
+      await call("opinion_search", { q: `token-${value}` });
+      expect(lastInit().headers.Authorization, value).toBe(`Token ${value}`);
+    }
+  });
+});
+
 describe("case_detail id validation", () => {
   // The id is interpolated into the request path; the three sibling id-taking
   // tools already reject a negative or fractional one pre-flight.

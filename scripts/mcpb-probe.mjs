@@ -88,8 +88,12 @@ try {
   const subst = (s) => String(s).replaceAll("${__dirname}", dir);
   const args = cfg.args.map(subst);
 
-  // A host drops an env entry whose user_config value the user left unset.
-  // The token is required: false, so the unset case IS the documented one.
+  // This models ONE of the two things a host can do with an env entry whose
+  // user_config value the user left unset (the token is required: false, so
+  // that case is the normal one): drop the entry. The other is to pass the
+  // "${user_config...}" placeholder through verbatim, and nothing in the mcpb
+  // package documents which — so server.ts treats a bare placeholder as no
+  // token rather than sending it as one.
   const childEnv = { ...process.env };
   delete childEnv.COURTLISTENER_API_TOKEN;
   for (const [k, v] of Object.entries(cfg.env ?? {})) {

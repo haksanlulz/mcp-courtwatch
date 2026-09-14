@@ -150,11 +150,32 @@ const ORDER_BY: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * The token, or null. An unsubstituted placeholder is not a token.
+ *
+ * The .mcpb manifest declares
+ * `"COURTLISTENER_API_TOKEN": "${user_config.courtlistener_api_token}"` for a
+ * field that is `required: false`, so what arrives in this variable when the
+ * user leaves the field blank is up to the host. The bundle probe asserts the
+ * entry is dropped; the @anthropic-ai/mcpb package documents no such rule (its
+ * README does not mention user_config and the v0.3 schema says nothing about
+ * substitution), so that is an assumption about host behavior, not a contract.
+ * A host that passes the placeholder through verbatim would otherwise have it
+ * sent as `Authorization: Token ${user_config...}`, which 401s all seven
+ * keyless tools — and, since a token WAS attached, answers with the guidance
+ * that says the user's token is stale when they never set one.
+ */
+function rawToken(): string | null {
+  const t = process.env.COURTLISTENER_API_TOKEN?.trim();
+  if (!t || /^\$\{[^}]*\}$/.test(t)) return null;
+  return t;
+}
+
+/**
  * Read the CourtListener API token from the environment, or throw a clear setup
  * error. Called by tools that hit auth-required endpoints (case_detail).
  */
 function token(): string {
-  const t = process.env.COURTLISTENER_API_TOKEN?.trim();
+  const t = rawToken();
   if (!t) {
     throw new Error(
       `set COURTLISTENER_API_TOKEN (free at ${TOKEN_SIGNUP_URL}). ` +
@@ -166,7 +187,7 @@ function token(): string {
 
 /** The token if set, else null (no throw). Used to opportunistically raise the rate limit. */
 function optionalToken(): string | null {
-  return process.env.COURTLISTENER_API_TOKEN?.trim() || null;
+  return rawToken();
 }
 
 /**
