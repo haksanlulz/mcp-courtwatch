@@ -69,7 +69,15 @@ Sources:
 
 ## Install
 
-Nothing to clone. Point your MCP client at it and npm fetches it on first run:
+**Bundle (.mcpb).** For a client that installs MCP bundles, build one and open it — no JSON to edit, and the API token is an optional field in the install dialog:
+
+```bash
+npm ci && npm run mcpb:pack     # writes build/mcp-courtwatch-<version>.mcpb
+```
+
+The bundle is self-contained (manifest, `dist/`, and the one runtime dependency) and runs `node dist/index.js`. `npm run verify:mcpb` packs it, unpacks it, launches it through the manifest's own `mcp_config` with no token in the environment, and checks that the tools it serves match the ones the manifest declares. CI runs that on every push.
+
+**npm.** Nothing to clone. Point your MCP client at it and npm fetches it on first run:
 
 ```json
 {

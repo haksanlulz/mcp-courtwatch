@@ -14,11 +14,13 @@
   },
   "scripts": {
     "build": "tsc",
+    "mcpb:pack": "node scripts/mcpb-pack.mjs",
     "prepublishOnly": "npm run build && npm run typecheck && npm test",
     "smoke": "tsx smoke.ts",
     "start": "tsx index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "verify:mcpb": "node scripts/mcpb-pack.mjs && node scripts/mcpb-probe.mjs",
     "verify:pack": "node scripts/pack-probe.mjs"
   },
   "keywords": [
@@ -40,6 +42,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
     "@types/node": "^26.1.1",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2",

@@ -1,0 +1,115 @@
+{
+  "manifest_version": "0.3",
+  "name": "mcp-courtwatch",
+  "display_name": "CourtWatch",
+  "version": "1.1.0",
+  "description": "Free U.S. legal research over CourtListener: case-law and docket search, a free citator check, tables of authorities, RECAP filing histories, oral-argument transcripts, and citation verification that catches fabricated cites.",
+  "long_description": "An MCP server over CourtListener, the Free Law Project's open legal database. Built for legal aid, tenant defense, pro-se litigants and public-interest lawyers who cannot afford Westlaw or PACER.\n\nSix of the eleven tools work with no account at all, including `cited_by` — the free citator check for who is still relying on a case — and `oral_argument_transcript`. A free CourtListener API token unlocks the other five and raises the rate limit on all of them; it is optional, so the server is useful the moment it is installed.\n\nEvery result is framed as raw public court records rather than as advice, in the payload itself, and `citation_lookup` exists so that a fabricated citation comes back unfound rather than plausible.",
+  "author": {
+    "name": "Abishai James",
+    "url": "https://github.com/haksanlulz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haksanlulz/mcp-courtwatch"
+  },
+  "homepage": "https://github.com/haksanlulz/mcp-courtwatch",
+  "documentation": "https://github.com/haksanlulz/mcp-courtwatch#readme",
+  "support": "https://github.com/haksanlulz/mcp-courtwatch/issues",
+  "license": "MIT",
+  "keywords": [
+    "case-law",
+    "citation-check",
+    "citator",
+    "civic-data",
+    "court-dockets",
+    "courtlistener",
+    "free-law-project",
+    "legal-aid",
+    "oral-arguments",
+    "pro-se",
+    "recap"
+  ],
+  "privacy_policies": [
+    "https://www.courtlistener.com/terms/"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
+      "env": {
+        "COURTLISTENER_API_TOKEN": "${user_config.courtlistener_api_token}"
+      }
+    }
+  },
+  "user_config": {
+    "courtlistener_api_token": {
+      "type": "string",
+      "title": "CourtListener API token",
+      "description": "Optional. Free at courtlistener.com (create an account, then Profile > API). Without it, opinion_search, docket_lookup, court_list, judge_lookup, cited_by, oral_arguments and oral_argument_transcript all still work at the unauthenticated rate limit; case_detail, citation_lookup, case_authorities and docket_entries need it. A token also raises the rate limit on the keyless tools. Sent only to courtlistener.com, as an Authorization header, and never logged.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "opinion_search",
+      "description": "Full-text search of U.S. case law and court opinions. Keyless."
+    },
+    {
+      "name": "docket_lookup",
+      "description": "Search court dockets by case name, free text, or docket number. Keyless."
+    },
+    {
+      "name": "court_list",
+      "description": "List CourtListener courts and the ids used as the court filter. Keyless."
+    },
+    {
+      "name": "case_detail",
+      "description": "Fetch a full case by id: a cluster's metadata, or one opinion's full text. Needs a token."
+    },
+    {
+      "name": "citation_lookup",
+      "description": "Verify citations in a draft against the database of real cases; catches fabricated cites. Needs a token."
+    },
+    {
+      "name": "judge_lookup",
+      "description": "Look up judges and people in CourtListener's judiciary database. Keyless."
+    },
+    {
+      "name": "cited_by",
+      "description": "Every opinion citing a given opinion — a free citator check. No treatment classification. Keyless."
+    },
+    {
+      "name": "case_authorities",
+      "description": "The authorities an opinion relies on, with a per-authority citation depth. Needs a token."
+    },
+    {
+      "name": "docket_entries",
+      "description": "A federal docket's filing history from the RECAP archive. Needs a token."
+    },
+    {
+      "name": "oral_arguments",
+      "description": "Search oral-argument audio recordings. Keyless."
+    },
+    {
+      "name": "oral_argument_transcript",
+      "description": "An oral argument's machine-generated Whisper transcript, paged, with CourtListener's own transcription-status verdict. Keyless."
+    }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18"
+    }
+  }
+}

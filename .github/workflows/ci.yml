@@ -58,6 +58,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify:pack
+      # The OTHER install channel. verify:pack resolves an npm bin shim; this
+      # packs the .mcpb and launches it through the manifest's own mcp_config,
+      # with COURTLISTENER_API_TOKEN stripped so the keyless path is what gets
+      # measured. An entry_point that does not start is invisible to every
+      # other job here.
+      - run: npm run verify:mcpb
       - run: npm pack --silent > .tgzname
       - uses: actions/upload-artifact@v4
         with:
