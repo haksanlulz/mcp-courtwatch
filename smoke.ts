@@ -2,9 +2,10 @@
 // Gated on COURTLISTENER_API_TOKEN: prints a skip notice and exits 0 when the
 // token is unset, so it is safe to wire into CI without a secret.
 //
-// (opinion_search, docket_lookup, court_list, judge_lookup, cited_by and
-// oral_arguments actually work unauthenticated; the whole smoke is still
-// token-gated for consistency, and the other four require the token.)
+// (opinion_search, docket_lookup, court_list, judge_lookup, cited_by,
+// oral_arguments and oral_argument_transcript actually work unauthenticated;
+// the whole smoke is still token-gated for consistency, and the other four
+// require the token.)
 //
 // Every check asserts. A check that only logs passes on `returned: 0`, which is
 // exactly what a query the index has stopped matching produces — and the
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
   };
 
   let sampleClusterId: number | null = null;
+  let sampleAudioId: number | null = null;
 
   await run("opinion_search", async () => {
     const body = parse(
@@ -191,6 +193,43 @@ async function main(): Promise<void> {
     need(body.returned >= 1, `expected at least one scotus oral argument matching "miranda", got ${body.returned}`);
     nonEmptyString(body.results[0].case_name, "results[0].case_name");
     positiveInt(body.results[0].audio_id, "results[0].audio_id");
+    sampleAudioId = body.results[0].audio_id;
+  });
+
+  await run("oral_argument_transcript", async () => {
+    if (sampleAudioId == null) skip("oral_arguments produced no audio id");
+    const body = parse(
+      await client.callTool({
+        name: "oral_argument_transcript",
+        arguments: { audio_id: sampleAudioId, max_chars: 2000 },
+      }),
+    );
+    console.log(
+      `     -> audio ${sampleAudioId}: ${body.stt_verdict}, ${body.transcript_chars} char(s) on the record`,
+    );
+    nonEmptyString(body.stt_verdict, "stt_verdict");
+    nonEmptyString(body.provenance, "provenance");
+    need(body.machine_generated === true, "every transcript must declare itself machine-generated");
+    // The usability gate, on the live channel: text rides a usable verdict and
+    // nothing else. This is the half of the tool that exists to refuse — 708 of
+    // 103,278 records are flagged as not matching their audio and still carry text.
+    need(
+      body.transcript_usable === (typeof body.text === "string"),
+      `text is returned iff the transcript is usable; got transcript_usable ${body.transcript_usable} with text ${typeof body.text}`,
+    );
+    need(
+      typeof body.text !== "string" || body.stt_verdict === "COMPLETE",
+      `text was returned under verdict ${body.stt_verdict}; only COMPLETE may carry text`,
+    );
+    if (typeof body.text === "string") {
+      need(body.returned_chars === body.text.length, "returned_chars must match the page actually returned");
+    }
+    // A COMPLETE verdict with nothing on the record is how a renamed
+    // stt_transcript field would look: the status still parses, the text is gone.
+    need(
+      body.stt_verdict !== "COMPLETE" || body.transcript_chars > 0,
+      "a COMPLETE transcription reported 0 characters — check whether stt_transcript was renamed upstream",
+    );
   });
 
   await run("docket_entries", async () => {
