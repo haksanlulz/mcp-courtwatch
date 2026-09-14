@@ -17,7 +17,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 | `cited_by` | `opinion_id` (required), `order_by`, `limit`, `cursor` | Every opinion citing a given opinion, via the `cites:()` search operator — a free citator check (who still relies on this case). Newest-first by default. No treatment classification. Keyless, and the id comes from `opinion_search`'s `opinions[].id` so the whole chain works without a token (`case_detail`'s `sub_opinion_ids` is the token-gated alternative). |
 | `case_authorities` | `opinion_id` (required), `limit` | The authorities an opinion relies on (its table of authorities) with a per-authority citation depth, via `/opinions-cited/`. Token required. |
 | `docket_entries` | `docket_id` (required), `limit`, `cursor` | A federal docket's filing history from the RECAP archive: numbered entries, dates, descriptions, archived PACER documents with page counts and availability. Token required. RECAP holds what its users bought from PACER. |
-| `oral_arguments` | `q` (required), `court`, `order_by` (relevance/newest/oldest), `argued_after`, `argued_before`, `include_transcript_status`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, audio id, MP3 link, and `snippet` — an excerpt of the recording's **machine-generated Whisper transcript**, not a certified transcript. Each row also carries `transcript_status`, which reads `NOT_CHECKED` unless `include_transcript_status` is set (that costs one extra request per row; see the caveats). Keyless. |
+| `oral_arguments` | `q` (required), `court`, `order_by` (relevance/newest/oldest), `argued_after`, `argued_before`, `include_transcript_status`, `limit`, `cursor` | Oral-argument audio search (`type=oa`): case, court, argue date, panel judges, duration, audio id, MP3 link, and `snippet` — an excerpt of the recording's **machine-generated Whisper transcript**, not a certified transcript, and 708 of CourtListener's audio records are flagged as transcripts that do not match their audio. Each row also carries `transcript_status`, which reads `NOT_CHECKED` unless `include_transcript_status` is set (that costs one extra request per row; see the caveats). Keyless. |
 | `oral_argument_transcript` | `audio_id` (required), `offset`, `max_chars` | The recording's Whisper transcript text (`/audio/{id}/`), paged. Returns `stt_verdict` (CourtListener's own transcription status, mapped), `transcript_usable`, `transcript_chars`, `truncated`, `next_offset`, and `provenance`. Only a `COMPLETE` transcription returns text: one flagged `TRANSCRIPTION_DOES_NOT_MATCH_AUDIO` has text on the record and it is withheld here. Keyless. |
 
 `order_by` for `opinion_search` is one of `relevance` (default), `newest`, `oldest`, `most_cited`. Court `jurisdiction` codes include `F` (federal appellate and other), `FD` (federal district), `FB` (bankruptcy), `S` (state), `SA` (state appellate), `SS` (state supreme).
@@ -59,10 +59,11 @@ Sources:
 | `citation`, `normalized_citations`, `start_index`, `end_index` | same names | citation_lookup (per citation) |
 | `status` (200/300/400/404/429), `error_message` | `status` + `verdict` (`FOUND`, `FOUND_MULTIPLE`, `UNKNOWN_REPORTER`, `NOT_FOUND`, `NOT_CHECKED_OVER_CAP`) + `verified`, `error_message` | citation_lookup (per citation) |
 | `clusters` (array of cluster objects) | `matches` (cluster id, case name, date, citations, link) | citation_lookup (per citation) |
+| `count` on a `cites:()` search | `total_citing` (hits normalized exactly as opinion_search hits) | cited_by |
 | `cited_opinion` / `citing_opinion` (resource URLs), `depth` | `cited_opinion_id`, `citing_opinion_id`, `depth` | case_authorities |
 | `entry_number`, `date_filed`, `description`, `recap_documents[]` (`document_number`, `page_count`, `is_available`, `filepath_local`) | same names; `description_short` falls back to `short_description` | docket_entries |
 | `dateArgued`, `dateReargued`, `judge`, `duration`, `id`, `download_url` | `date_argued`, `date_reargued`, `judges`, `duration_seconds`, `audio_id`, `download_url` | oral_arguments |
-| `snippet` (an excerpt of the Whisper transcript, not a certified one) | `snippet` | oral_arguments |
+| `snippet` (the indexed text for `type=oa` IS the Whisper transcript, so this is machine speech-to-text, not a certified transcript — live 2026-09-14, audio 102928's 497-character snippet is byte-identical to the opening of its `stt_transcript`) | `snippet` | oral_arguments |
 | `stt_status` (0-5) | `stt_verdict` (`TRANSCRIPTION_NEEDED`, `COMPLETE`, `TRANSCRIPTION_FAILED`, `TRANSCRIPTION_DOES_NOT_MATCH_AUDIO`, `AUDIO_FILE_TOO_BIG`, `AUDIO_FILE_MISSING`) + `transcript_usable`; on a search row, `transcript_status` | oral_argument_transcript, oral_arguments |
 | `stt_source` (1 / 2) | `stt_source` (`OpenAI API whisper-1` / `self-hosted Whisper`) | oral_argument_transcript |
 | `stt_transcript` | `text` (+ `transcript_chars`, `offset`, `returned_chars`, `truncated`, `next_offset`) | oral_argument_transcript |
@@ -214,9 +215,42 @@ The fabricated citation comes back `NOT_FOUND` with a top-level `warning`. Per-c
 
 **The blind spot to know about:** the extractor can only flag what it can recognize. `999 U.S. 9999` is caught (real reporter, fake volume: `NOT_FOUND`), but a cite with an *invented reporter* — live example `999 A.D.9th 999` — is not recognized as a citation at all, so it is neither counted nor flagged. Every response carries a `coverage_note` stating this; treat `all_verified` as covering recognized citations only.
 
+## Worked example: is this tenant case still good law?
+
+A caseworker is writing an intake note on a habitability defense in New York and needs the leading case plus some sign it is still being relied on. No token, no account, three tool calls. Every figure below was captured live on 2026-09-14 and will drift as CourtListener grows.
+
+**1. Find the leading case.** `opinion_search` with `{ "q": "warranty of habitability eviction", "court": "ny", "order_by": "most_cited" }` → 8 results. The fields that matter from the first one:
+
+| Field | Value |
+|---|---|
+| `case_name` | Park West Management Corp. v. Mitchell |
+| `date_filed` | 1979-06-07 |
+| `cite_count` | 393 |
+| `cluster_id` | 5683523 |
+| `opinions[0].id` | 5532217 (`lead-opinion`) |
+
+`cite_count` is how many opinions cite it — the reason it sorts first under `most_cited`.
+
+**2. Take the opinion id, not the cluster id.** `cited_by` wants an *opinion* id, and `opinions[0].id` above is it. `case_detail` would also give you one, in `sub_opinion_ids`, but that endpoint needs a token; the search hit does not.
+
+**3. Ask who cites it.** `cited_by` with `{ "opinion_id": 5532217 }` → `total_citing` **174**, newest first:
+
+| Field | Value |
+|---|---|
+| `total_citing` | 174 |
+| `results[0].case_name` | Fiondella v. 345 W. 70th Tenants Corp. |
+| `results[0].date_filed` | 2023-06-13 |
+| `results[0].court_id` | nyappdiv |
+
+What a caseworker can paste into an intake note:
+
+> The leading New York case on the warranty of habitability is Park West Management Corp. v. Mitchell, decided 1979-06-07. As of 2026-09-14, CourtListener records 174 opinions citing it, the most recent being Fiondella v. 345 W. 70th Tenants Corp. (App. Div., 2023-06-13). That means the case is still being engaged with by New York courts. It does **not** mean those 174 opinions agreed with it: `cited_by` reports who cites a case, never whether they followed, distinguished, or criticized it. Read the citing opinions before relying on any of them, and confirm current law with a lawyer.
+
+That last caveat is not decoration. It rides every `cited_by` response as a `note`, because the difference between "cited 174 times" and "good law 174 times" is the whole of a citator's value.
+
 ## Caveats and verification state
 
-Every tool — including all four token-gated ones — has been run live against the real API with a real token (`npm run smoke`, 10/10, 2026-08-23). Two contract facts were only discoverable live and are baked in: the `/docket-entries/` filter parameter is `docket` (an unauthenticated probe cannot see this, since auth is checked before params), and new-account rate limiting is 5 requests/minute (see the token section). Standing caveats that are properties of the API, not gaps in verification:
+Every tool has been run live against the real API with a real token (`npm run smoke`, 10/10, re-run 2026-09-14 at `COURTWATCH_THROTTLE_MS=15000`; at the 200ms default on a new account the last five checks all draw HTTP 429). `oral_argument_transcript` was verified separately against audio 106247 and 106047 the same day, byte-compared with a direct read of `/audio/<id>/`. Two contract facts were only discoverable live and are baked in: the `/docket-entries/` filter parameter is `docket` (an unauthenticated probe cannot see this, since auth is checked before params), and new-account rate limiting is 5 requests/minute (see the token section). Standing caveats that are properties of the API, not gaps in verification:
 
 - **The citation checker has a structural blind spot, named in every payload.** It can only check citations whose reporter it recognizes. A fabricated cite with an invented reporter (live example: `999 A.D.9th 999`) is not recognized, not counted, and not flagged, so `all_verified: true` means "every recognized citation resolved" — never "nothing in this text is fake." Every `citation_lookup` response carries a `coverage_note` saying exactly this.
 - The clusters returned by `citation_lookup` do not include the court (in CourtListener's model the court hangs off the docket, not the cluster). For the court, follow the match's `absolute_url` or pass its `cluster_id` to `case_detail`. Deliberately not auto-fetched: a 250-citation brief would fan out into hundreds of extra docket calls.
@@ -235,22 +269,25 @@ npm test           # offline: vitest, fetch mocked with the documented response 
 npm run smoke      # live: one real call per tool (needs COURTLISTENER_API_TOKEN; skips cleanly without)
 npm run typecheck
 npm run verify:pack  # packs, installs into a temp project, spawns the bin shim over real stdio
+npm run verify:mcpb  # packs the .mcpb, unpacks it, launches it through the manifest's own mcp_config
 ```
 
-Two tiers, split by script rather than by marker. `npm test` is the offline suite; CI runs it plus `npm run typecheck`, `npm run build`, and `npm run verify:pack` (ci.yml jobs test, package, consume). `npm run smoke` is the live upstream contract, token-gated, and not run in CI.
+Two tiers, split by script rather than by marker. `npm test` is the offline suite; CI runs it plus `npm run typecheck`, `npm run build`, `npm run verify:pack` and `npm run verify:mcpb` (ci.yml jobs test, package, consume). `npm run smoke` is the live upstream contract, token-gated, and not run in CI.
 
-Counts as of 2026-09-11: 54 tests in 2 files (`npm test`), 1541 lines of app source, 1112 lines of test source.
+Counts as of 2026-09-14: 106 tests in 4 files (`npm test`), 2313 lines of app source and packaging scripts, 1890 lines of test source.
 
 ```
-find . -path ./node_modules -prune -o -path ./dist -prune -o -path ./test -prune -o \( -name '*.ts' -o -name '*.mjs' \) -print | grep -v smoke.ts | xargs wc -l
+find . -path ./node_modules -prune -o -path ./dist -prune -o -path ./build -prune -o -path ./test -prune -o \( -name '*.ts' -o -name '*.mjs' \) -print | grep -v smoke.ts | xargs wc -l
 find test -name '*.test.ts' | xargs wc -l
 ```
 
-What the tests cover, by layer: `test/server.test.ts` drives every tool through a real MCP client over an in-memory transport with `fetch` stubbed, and asserts the outgoing request (path, query params, Authorization header, POST body) and the normalized response shape, plus the retry policy (5xx and 429 retried three times, 4xx and non-JSON not retried), the response cache, and the argument validators that must fail before any network call. `test/no-http-stack.test.ts` pins the dependency surface. The live smoke checks each tool once against the real API.
+What the tests cover, by layer. `test/server.test.ts` drives every tool through a real MCP client over an in-memory transport with `fetch` stubbed, and asserts the outgoing request (path, query params, Authorization header, POST body) and the normalized response shape, plus the retry policy (5xx and 429 retried three times, 4xx and non-JSON not retried), the response cache, the argument validators that must fail before any network call, and the two shapes that must never be confused with each other — an empty `results` array (a real answer) versus a body with no `results` array (an error). `test/throttle.test.ts` measures the outbound throttle against a fake clock, asserting call-START timestamps. `test/env-validation.test.ts` re-imports the server with a garbage `CL_HTTP_ATTEMPTS` / `CL_CACHE_TTL_MS` / `CL_CACHE_MAX` and asserts each falls back rather than poisoning arithmetic. `test/no-http-stack.test.ts` pins the dependency surface. The live smoke checks each tool once against the real API.
 
-Mutation probe (2026-09-11): raising `CITATION_TEXT_CAP` in `server.ts` from 64000 to 65000 turned exactly one test red, `citation_lookup > rejects oversized text before any network call instead of truncating`, 53 of 54 passing; the source was then restored.
+The offline suite runs with `COURTWATCH_THROTTLE_MS=0` (`vitest.config.ts`): `fetch` is stubbed, so paying the real 200ms outbound gap bought nothing but 14 seconds of sleeping.
 
-The 19 `toHaveBeenCalled*` assertions were audited and all kept: each one pins a named contract (no request leaves on a validation or missing-token error, retry count, cache hit, two-page walk). Policy: assert behavior and payloads, never merely that a function was called.
+Mutation probes (2026-09-14), each run and then reverted: restoring the bare `Number(process.env.CL_HTTP_ATTEMPTS ?? 3)` read turns 4 env-validation tests red; restoring `String(err)` in the CallTool catch turns the non-Error test red with *expected 'Error: undefined' not to be 'Error: undefined'*; restoring the permissive `extractResults` turns 6 of the 8 envelope tests red while leaving the legitimate-empty test green; neutering `throttled()` to a pass-through turns both throttle tests red; removing the transcript usability gate turns 8 transcript tests red; and pointing the manifest's `entry_point` at a file that exists but is not an entry point turns `verify:mcpb` red with *no initialize response*. The live smoke's verdict path was probed the same way: with every tool stubbed and `opinion_search` returning an empty page, it exits 1 reporting 8 passed / 1 failed / 1 skipped, where the earlier version printed two green lines.
+
+The 35 `toHaveBeenCalled*` assertions each pin a named contract (no request leaves on a validation or missing-token error, retry count, cache hit, two-page walk, one status check per row). Policy: assert behavior and payloads, never merely that a function was called.
 
 ## AI assistance
 
