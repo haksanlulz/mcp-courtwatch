@@ -32,6 +32,13 @@ const fail = (m) => {
 };
 const ok = (m) => console.log(`  ok  ${m}`);
 
+/**
+ * Error text that says something about the network or about CourtListener, and
+ * nothing about this bundle. Matching means SKIP-and-name, never PASS.
+ */
+const NOT_A_VERDICT_ON_THE_BUNDLE =
+  /HTTP (429|5\d\d)|throttled|timed? ?out|fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network/i;
+
 const manifestSrc = JSON.parse(readFileSync(join(repo, "manifest.json"), "utf8"));
 const bundle =
   process.env.MCPB_BUNDLE ?? join(repo, "build", `${manifestSrc.name}-${manifestSrc.version}.mcpb`);
@@ -156,7 +163,14 @@ try {
   if (called.result.isError) {
     // A throttle or an upstream outage is not a verdict on this bundle. It is
     // also not a pass: it is reported as a skip and named.
-    if (/HTTP (429|5\d\d)|throttled|timeout/i.test(text)) {
+    //
+    // Transport failures belong in this set and were missing from it. A DNS or
+    // socket failure surfaces as fetch's own message — "fetch failed",
+    // ENOTFOUND, ECONNRESET — which matched none of HTTP 429/5xx, "throttled"
+    // or "timeout", so a network blip on a CI runner reported the BUNDLE as
+    // broken. This rung runs on every push, which makes the false red the
+    // likely one.
+    if (NOT_A_VERDICT_ON_THE_BUNDLE.test(text)) {
       console.log(`  SKIP keyless opinion_search: upstream said "${text.slice(0, 160)}"`);
       console.log("PASS (with 1 skipped) — the bundle starts and serves its tools; the live call could not be made.");
       process.exit(0);
