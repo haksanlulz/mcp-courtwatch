@@ -1817,6 +1817,42 @@ describe("ux fixes 1.1.1", () => {
   });
 });
 
+describe("a limit below the page size loses rows the cursor then skips", () => {
+  // next_cursor is taken from the full envelope, so it begins at the row after
+  // the whole PAGE. With limit 3 of a 20-row page, seventeen matches are gone
+  // and the `cursor` argument's own description tells the caller to page
+  // exactly that way.
+  const page = (n: number, row: Record<string, unknown>) =>
+    jsonResponse({
+      count: 999,
+      next: "https://www.courtlistener.com/api/rest/v4/search/?cursor=nextpage",
+      results: Array.from({ length: n }, (_, i) => ({ ...row, cluster_id: 100 + i, docket_id: 200 + i })),
+    });
+
+  const CASES: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ["opinion_search", { q: "eviction", limit: 3 }, { caseName: "A", court_id: "ny", opinions: [{ id: 5 }] }],
+    ["docket_lookup", { q: "eviction", limit: 3 }, { caseName: "A", court_id: "ny" }],
+    ["cited_by", { opinion_id: 2812209, limit: 3 }, { caseName: "A", court_id: "ny", opinions: [{ id: 5 }] }],
+    ["oral_arguments", { q: "miranda", limit: 3 }, { caseName: "A", court_id: "ny", id: 7 }],
+  ];
+
+  it.each(CASES)("%s reports the rows limit dropped", async (tool, args, row) => {
+    fetchMock.mockResolvedValueOnce(page(20, row));
+    const body = payload(await call(tool, args));
+    expect(body.returned).toBe(3);
+    expect(body.dropped_from_this_page, `${tool} did not report dropped rows`).toBe(17);
+    expect(String(body.note)).toMatch(/skips the 17 dropped row/i);
+    expect(body.next_cursor).toBe("nextpage");
+  });
+
+  it.each(CASES)("%s says nothing when the whole page fits", async (tool, args, row) => {
+    fetchMock.mockResolvedValueOnce(page(3, row));
+    const body = payload(await call(tool, args));
+    expect(body.dropped_from_this_page).toBe(0);
+    expect(String(body.note ?? "")).not.toMatch(/dropped row/i);
+  });
+});
+
 describe("response cache", () => {
   // Case law is immutable, so a repeat lookup in one session is a settled
   // question. CourtListener runs on donated infrastructure, which makes not

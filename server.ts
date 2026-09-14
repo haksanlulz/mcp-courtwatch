@@ -505,6 +505,28 @@ function expectDetail(json: unknown, id: number, source: string): Row {
 }
 
 /**
+ * Say what `limit` dropped from a page the caller may then try to page past.
+ *
+ * The four /search/ tools slice the page to `limit` but take next_cursor from
+ * the full envelope, so the cursor begins at the row after the whole PAGE, not
+ * after the last row returned. A caller who sets limit below the page size and
+ * then pages silently loses every sliced-off row — while the `cursor` argument's
+ * own description tells them to page exactly that way.
+ *
+ * Returns undefined when nothing was dropped, so the payload stays quiet in the
+ * common case.
+ */
+function droppedNote(pageLength: number, kept: number): string | undefined {
+  const dropped = pageLength - kept;
+  if (dropped <= 0) return undefined;
+  return (
+    `limit kept ${kept} of the ${pageLength} rows CourtListener sent for this page. next_cursor begins at ` +
+    `the next page, so paging with it skips the ${dropped} dropped row(s) — raise limit to ` +
+    `${SEARCH_PAGE_SIZE} when you intend to page.`
+  );
+}
+
+/**
  * Extract the opaque `cursor` value from a DRF envelope's `next` URL, or null
  * when there is no next page. CourtListener's /search/ `next` looks like
  * `.../search/?cursor=<value>&q=...`; we surface just the cursor so a caller can
@@ -1447,7 +1469,8 @@ async function opinionSearch(args: Row): Promise<unknown> {
     },
     { expectResults: source },
   );
-  const results = extractResults(json, source).slice(0, limit).map(normalizeOpinionHit);
+  const page = extractResults(json, source);
+  const results = page.slice(0, limit).map(normalizeOpinionHit);
   return {
     query: {
       q,
@@ -1459,7 +1482,9 @@ async function opinionSearch(args: Row): Promise<unknown> {
     },
     total_matches: num((json as Row).count),
     returned: results.length,
+    dropped_from_this_page: page.length - results.length,
     next_cursor: extractCursor((json as Row).next),
+    note: droppedNote(page.length, results.length),
     results,
   };
 }
@@ -1523,12 +1548,15 @@ async function docketLookup(args: Row): Promise<unknown> {
     },
     { expectResults: source },
   );
-  const results = extractResults(json, source).slice(0, limit).map(normalizeDocketHit);
+  const page = extractResults(json, source);
+  const results = page.slice(0, limit).map(normalizeDocketHit);
   return {
     query: { q: q ?? null, docket_number: docketNumber ?? null, court: court ?? null, cursor: cursor ?? null },
     total_matches: num((json as Row).count),
     returned: results.length,
+    dropped_from_this_page: page.length - results.length,
     next_cursor: extractCursor((json as Row).next),
+    note: droppedNote(page.length, results.length),
     results,
   };
 }
@@ -1774,15 +1802,19 @@ async function citedBy(args: Row): Promise<unknown> {
     },
     { expectResults: source },
   );
-  const results = extractResults(json, source).slice(0, limit).map(normalizeOpinionHit);
+  const page = extractResults(json, source);
+  const results = page.slice(0, limit).map(normalizeOpinionHit);
+  const dropped = droppedNote(page.length, results.length);
   return {
     query: { opinion_id: opinionId, order_by: orderKey, cursor: cursor ?? null },
     total_citing: num((json as Row).count),
     returned: results.length,
+    dropped_from_this_page: page.length - results.length,
     next_cursor: extractCursor((json as Row).next),
     note:
       "Citing opinions only — no treatment classification (followed / distinguished / overruled). " +
-      "A case with many recent citations is being engaged with; read the citing opinions to learn how.",
+      "A case with many recent citations is being engaged with; read the citing opinions to learn how." +
+      (dropped ? ` ${dropped}` : ""),
     results,
   };
 }
@@ -1892,7 +1924,8 @@ async function oralArguments(args: Row): Promise<unknown> {
     },
     { expectResults: source },
   );
-  const results = extractResults(json, source).slice(0, limit).map(normalizeOralArgumentHit);
+  const page = extractResults(json, source);
+  const results = page.slice(0, limit).map(normalizeOralArgumentHit);
 
   // Transcript availability is NOT in the search index, and /audio/ has no
   // batch id filter — id__in is rejected ("Unknown filter parameters are not
@@ -1936,6 +1969,8 @@ async function oralArguments(args: Row): Promise<unknown> {
         "looked up, never that no transcript exists.",
     );
   }
+  const dropped = droppedNote(page.length, results.length);
+  if (dropped) notes.push(dropped);
 
   return {
     query: {
@@ -1948,6 +1983,7 @@ async function oralArguments(args: Row): Promise<unknown> {
     },
     total_matches: num((json as Row).count),
     returned: results.length,
+    dropped_from_this_page: page.length - results.length,
     next_cursor: extractCursor((json as Row).next),
     note: notes.join(" "),
     results,
