@@ -93,6 +93,14 @@ const MAX_RESULTS = 50;
  */
 const SEARCH_PAGE_SIZE = 20;
 /**
+ * True page size of /people/. The endpoint paginates by cursor and ignores
+ * page_size: /people/?name_last=Smith and the same query with page_size=50 both
+ * return 20 rows with a `next` (verified live 2026-09-14). judge_lookup exposes
+ * no cursor, so 20 is everything one call can reach and advertising 50 promised
+ * a number the endpoint cannot serve.
+ */
+const PEOPLE_PAGE_SIZE = 20;
+/**
  * Safety cap on pages walked when scanning the full /courts/ table for a name
  * filter. /courts/ paginates by ?page=N and also ignores page_size (~20/page),
  * so the ~3,359 courts span ~168 pages; cap well
@@ -1361,7 +1369,10 @@ const TOOLS: Tool[] = [
       properties: {
         name_last: { type: "string", description: 'Last name to match (e.g. "Ginsburg").' },
         name_first: { type: "string", description: 'First name to match (e.g. "Ruth").' },
-        limit: { type: "integer", description: `Max people to return (1-${MAX_RESULTS}, default 10).` },
+        limit: {
+          type: "integer",
+          description: `Max people to return (1-${PEOPLE_PAGE_SIZE}, default 10). /people/ serves one fixed page of ${PEOPLE_PAGE_SIZE} and ignores page_size.`,
+        },
       },
       // Requires at least one of name_last / name_first (enforced in the handler).
       additionalProperties: false,
@@ -1714,7 +1725,7 @@ async function judgeLookup(args: Row): Promise<unknown> {
   if (!nameLast && !nameFirst) {
     throw new Error("Provide at least one of name_last or name_first.");
   }
-  const limit = clampLimit(args.limit, 10);
+  const limit = clampLimit(args.limit, 10, PEOPLE_PAGE_SIZE);
 
   const source = "judge_lookup (/people/)";
   const json = await clGet(
@@ -1726,9 +1737,17 @@ async function judgeLookup(args: Row): Promise<unknown> {
     { expectResults: source },
   );
   const results = extractResults(json, source).slice(0, limit).map(normalizeJudge);
+  // This tool exposes no cursor and `count` arrives as the deferred ?count=on
+  // URL, so without this flag a caller asking for 50 got `returned: 20` with
+  // nothing saying more people match.
+  const moreAvailable = extractCursor((json as Row).next) != null;
   return {
     query: { name_last: nameLast ?? null, name_first: nameFirst ?? null },
     returned: results.length,
+    more_available: moreAvailable,
+    note: moreAvailable
+      ? `More people match this name than one /people/ page holds (${PEOPLE_PAGE_SIZE} rows, page_size is ignored upstream). returned is this page, never the total — narrow with name_first.`
+      : undefined,
     results,
   };
 }

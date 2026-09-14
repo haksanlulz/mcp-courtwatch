@@ -624,6 +624,36 @@ describe("judge_lookup", () => {
     expect(res.content[0].text).toMatch(/name_last or name_first/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // /people/ serves one fixed page of 20 and ignores page_size: live
+  // 2026-09-14, /people/?name_last=Smith and the same query with page_size=50
+  // both returned 20 rows with a `next`. The tool advertised 1-50 and exposes
+  // no cursor, so a caller asking for 50 got 20 with nothing saying more exist.
+  it("advertises and enforces the true /people/ page size, not the 50 it cannot reach", async () => {
+    // 25 rows is a deliberately over-long page: upstream serves 20, and this
+    // is the only way to make the clamp observable. With limit clamped at
+    // MAX_RESULTS (50) instead of PEOPLE_PAGE_SIZE, `returned` would be 25.
+    const rows = Array.from({ length: 25 }, (_, i) => ({ id: 1000 + i, name_last: `Smith${i}` }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ count: null, next: "https://www.courtlistener.com/api/rest/v4/people/?cursor=abc", results: rows }),
+    );
+    const body = payload(await call("judge_lookup", { name_last: "Smith", limit: 50 }));
+    expect(body.returned).toBe(20);
+    expect(body.more_available).toBe(true);
+    expect(String(body.note)).toMatch(/never the total/i);
+
+    const tools: any = await client.listTools();
+    const schema = tools.tools.find((t: any) => t.name === "judge_lookup").inputSchema;
+    expect(schema.properties.limit.description).toMatch(/1-20/);
+    expect(schema.properties.limit.description).not.toMatch(/1-50/);
+  });
+
+  it("says nothing about more pages when the page is the whole answer", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(PEOPLE));
+    const body = payload(await call("judge_lookup", { name_last: "Ginsburg" }));
+    expect(body.more_available).toBe(false);
+    expect(body.note).toBeUndefined();
+  });
 });
 
 describe("case_detail", () => {
