@@ -1084,8 +1084,29 @@ describe("docket_lookup fielded docket number", () => {
     expect(q).not.toContain("\\");
   });
 
+  // The mix that sanitizes away entirely is not a balanced operator, it is an
+  // empty one — and docketNumber:"" is a query CourtListener answers: HTTP 200,
+  // count 0, verified live 2026-09-14. The balanced-operator test below used to
+  // feed exactly this input and assert only the shape of the string, so the
+  // real negative it produced had nothing looking at it.
+  it.each(['"', "\\", '"\\', '\\"\\"', '  "  '])(
+    "refuses docket_number %j, which would leave an empty operator reading as no such docket",
+    async (raw) => {
+      const res: any = await call("docket_lookup", { docket_number: raw });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/nothing is left to match/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses it even when a free-text q would have carried the search", async () => {
+    const res: any = await call("docket_lookup", { q: "eviction", docket_number: '"' });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("leaves the operator balanced for every quote/backslash mix", async () => {
-    for (const raw of ['1:20-cv-03590\\', '"\\', '1:20\\"-cv', 'a\\\\b']) {
+    for (const raw of ['1:20-cv-03590\\', '1:20\\"-cv', 'a\\\\b', '"1:20"']) {
       fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
       await call("docket_lookup", { docket_number: raw });
       const q = lastUrl().searchParams.get("q")!;

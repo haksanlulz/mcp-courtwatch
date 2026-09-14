@@ -1378,7 +1378,20 @@ async function docketLookup(args: Row): Promise<unknown> {
   // Stripping rather than escaping, to match the existing quote handling: no
   // real docket number contains either character, so nothing that could match
   // is lost.
-  const fielded = docketNumber ? `docketNumber:"${docketNumber.replace(/["\\]/g, "")}"` : null;
+  const cleanedNumber = docketNumber ? docketNumber.replace(/["\\]/g, "").trim() : null;
+  if (docketNumber && !cleanedNumber) {
+    // An argument made only of the stripped characters leaves docketNumber:""
+    // behind, and that is a query CourtListener answers: HTTP 200, count 0
+    // (verified live 2026-09-14). So a wholly invalid argument would render as
+    // "there is no such docket" — the same confusion extractResults refuses one
+    // layer up, arrived at through the sanitizer instead of through upstream.
+    throw new Error(
+      `docket_number ${JSON.stringify(docketNumber)} is only quote and backslash characters; nothing is ` +
+        "left to match after stripping them. Reporting that as zero results would be indistinguishable " +
+        "from there being no such docket, so it is an error instead.",
+    );
+  }
+  const fielded = cleanedNumber ? `docketNumber:"${cleanedNumber}"` : null;
   // The free-text half gets the treatment opinion_search's q gets: a dangling
   // backslash draws the same HTTP 500 from the query parser, and here it would
   // also escape the space before the fielded operator rather than end a value.
