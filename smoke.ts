@@ -12,10 +12,12 @@
 // queries here are hardcoded strings ("miranda", "eviction", "Ginsburg") that
 // CourtListener's index is free to stop matching at any time.
 //
-// A check whose input could not be resolved reports SKIP and is counted
-// separately. It is never counted ok: one upstream failure used to print two
-// green lines, because case_detail and docket_entries each returned early from
-// inside a `run` that treats "did not throw" as a pass.
+// A check whose input could not be resolved reports SKIP, is counted
+// separately, and makes the run exit 2. It is never counted ok: one upstream
+// failure used to print two green lines, because case_detail and docket_entries
+// each returned early from inside a `run` that treats "did not throw" as a
+// pass. Counting it separately fixed the half a person reads; the exit code is
+// the half a wrapper reads, and it stayed 0.
 //
 //   npm run smoke
 //
@@ -254,6 +256,15 @@ async function main(): Promise<void> {
   if (failures > 0) process.exit(1);
   if (skipped > 0) {
     console.log(`${skipped} check(s) could not run — that is not a pass. Re-run when their input resolves.`);
+    // Not 0: the exit code is the only channel a wrapper or a CI step reads,
+    // and a skip is "unmeasured", not "green". Counting it separately in the
+    // printed summary fixed the half a person sees and left the half a machine
+    // sees exactly as it was. 2 keeps it distinguishable from a real failure (1).
+    //
+    // The no-token exit above is deliberately still 0: that one is the whole
+    // suite declining to run, which is the documented way to wire this into CI
+    // without a secret. This is a suite that DID run and could not finish.
+    process.exit(2);
   }
 }
 
