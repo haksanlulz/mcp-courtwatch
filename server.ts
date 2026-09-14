@@ -1059,9 +1059,21 @@ async function docketLookup(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
   // A docket number goes through the FIELDED operator, not free text: fielded
   // docketNumber:"1:20-cv-03590" matched 6 dockets live where the free-text
-  // form matched thousands (verified 2026-08-23). Inner quotes are stripped so
-  // user input cannot break out of the quoted operator value.
-  const fielded = docketNumber ? `docketNumber:"${docketNumber.replace(/"/g, "")}"` : null;
+  // form matched thousands (verified 2026-08-23).
+  //
+  // Quotes AND backslashes are stripped. Stripping only quotes was not enough:
+  // a trailing backslash escapes the closing quote instead of ending the value,
+  // and CourtListener answers HTTP 500, which isRetryable() treats as a "come
+  // back" — so one bad argument became three 500s against a nonprofit's search
+  // cluster and the caller was told the server had failed. Verified live
+  // 2026-09-14: q=docketNumber:"1:20-cv-03590\" -> HTTP 500
+  // {"detail":"Internal Server Error..."}; the same query without the trailing
+  // backslash -> HTTP 200, count 6.
+  //
+  // Stripping rather than escaping, to match the existing quote handling: no
+  // real docket number contains either character, so nothing that could match
+  // is lost.
+  const fielded = docketNumber ? `docketNumber:"${docketNumber.replace(/["\\]/g, "")}"` : null;
   const effectiveQ = [q, fielded].filter(Boolean).join(" ").trim();
 
   const json = await clGet("/search/", {
@@ -1148,8 +1160,12 @@ async function courtList(args: Row): Promise<unknown> {
 }
 
 async function caseDetail(args: Row): Promise<unknown> {
+  // Same positive-integer check the three sibling id-taking tools already run:
+  // -5 and 1.5 were interpolated straight into the path.
   const id = num(args.id);
-  if (id == null) throw new Error("id is required (a numeric cluster id or opinion id).");
+  if (id == null || !Number.isInteger(id) || id <= 0) {
+    throw new Error("id is required (a positive numeric cluster id or opinion id).");
+  }
   const kind = (str(args.type) ?? "cluster").toLowerCase();
   if (kind !== "cluster" && kind !== "opinion") {
     throw new Error('type must be "cluster" or "opinion".');

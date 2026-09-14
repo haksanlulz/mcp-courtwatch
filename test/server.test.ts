@@ -1061,6 +1061,50 @@ describe("docket_lookup fielded docket number", () => {
     await call("docket_lookup", { docket_number: '1:20-cv-"03590"' });
     expect(lastUrl().searchParams.get("q")).toBe('docketNumber:"1:20-cv-03590"');
   });
+
+  // A trailing backslash escapes the closing quote rather than ending the
+  // value, and CourtListener answers 500 — which isRetryable() reads as a
+  // "come back", so one bad argument drew three 500s from a nonprofit's search
+  // cluster. Live 2026-09-14: docketNumber:"1:20-cv-03590\" -> HTTP 500;
+  // the same query without the backslash -> HTTP 200, count 6.
+  it("strips a TRAILING backslash, which would otherwise escape the closing quote", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 6, next: null, results: [] }));
+    await call("docket_lookup", { docket_number: "1:20-cv-03590\\" });
+    const q = lastUrl().searchParams.get("q")!;
+    expect(q).toBe('docketNumber:"1:20-cv-03590"');
+    expect(q).not.toContain("\\");
+  });
+
+  it("strips a mid-string backslash too", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    await call("docket_lookup", { docket_number: "1:20\\cv\\03590" });
+    const q = lastUrl().searchParams.get("q")!;
+    expect(q).toBe('docketNumber:"1:20cv03590"');
+    expect(q).not.toContain("\\");
+  });
+
+  it("leaves the operator balanced for every quote/backslash mix", async () => {
+    for (const raw of ['1:20-cv-03590\\', '"\\', '1:20\\"-cv', 'a\\\\b']) {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+      await call("docket_lookup", { docket_number: raw });
+      const q = lastUrl().searchParams.get("q")!;
+      // Exactly the two delimiting quotes, and no backslash to escape either.
+      expect(q.match(/"/g), `q for ${JSON.stringify(raw)}`).toHaveLength(2);
+      expect(q, `q for ${JSON.stringify(raw)}`).not.toContain("\\");
+      expect(q.startsWith('docketNumber:"') && q.endsWith('"')).toBe(true);
+    }
+  });
+});
+
+describe("case_detail id validation", () => {
+  // The id is interpolated into the request path; the three sibling id-taking
+  // tools already reject a negative or fractional one pre-flight.
+  it.each([-5, 1.5, 0])("rejects id %s before any network call", async (id) => {
+    const res: any = await call("case_detail", { id });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/positive/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("court_list cache", () => {
