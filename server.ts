@@ -439,8 +439,10 @@ async function clPost(
  * "there are no cases like this."
  *
  * All eight callers read a DRF list/search endpoint. citation_lookup is the one
- * bare-array response in this server and it is unpacked at its own call site,
- * not here (checked, not assumed).
+ * bare-array response in this server and is unpacked at its own call site, not
+ * here — where it now carries the equivalent check. This comment previously
+ * said that call site was "checked, not assumed" while it was coercing a
+ * non-array body to [], i.e. to "no citations were recognized".
  */
 function extractResults(json: unknown, source: string): Row[] {
   const tail =
@@ -1604,7 +1606,26 @@ async function citationLookup(args: Row): Promise<unknown> {
 
   // The response is a bare JSON array (no DRF envelope), one item per citation
   // recognized in the text.
-  const rows = Array.isArray(json) ? (json as Row[]) : [];
+  //
+  // The one bare-array response in this server, and it needs the check
+  // extractResults gives an envelope, for the same reason: a body that is not
+  // the array reads as "no citations were recognized in the text", which is
+  // exactly what a clean document produces — in the one tool whose whole
+  // purpose is catching a fabricated cite.
+  if (!Array.isArray(json)) {
+    const got =
+      json && typeof json === "object"
+        ? `an object with keys: ${Object.keys(json as Row).slice(0, 12).join(", ") || "(none)"}`
+        : json === null
+          ? "null"
+          : typeof json;
+    throw new PermanentError(
+      "CourtListener returned an unexpected body for citation_lookup (POST /citation-lookup/): expected " +
+        `a bare array of per-citation results, got ${got}. Reporting this as "no citations were recognized" ` +
+        "would be indistinguishable from a document that contains none, so it is surfaced as an error instead.",
+    );
+  }
+  const rows = json as Row[];
   const results = rows.map(normalizeCitationResult);
 
   const found = results.filter((r) => r.verified === true).length;

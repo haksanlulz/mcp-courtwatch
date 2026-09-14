@@ -1529,6 +1529,29 @@ describe("an unexpected response envelope", () => {
     const body = payload(await call("citation_lookup", { text: "410 U.S. 113 and 999 U.S. 9999" }));
     expect(body.citations_checked).toBe(2);
   });
+
+  // The contrast with the test above is the point: an enveloped body used to
+  // coerce to [] and render byte-identically to a document containing no
+  // citations at all — in the one tool built to catch a fabricated cite.
+  it("citation_lookup refuses an enveloped response instead of reading it as no citations", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ count: 2, results: [{ citation: "410 U.S. 113", status: 200 }] }),
+    );
+    const res: any = await call("citation_lookup", { text: "See Roe v. Wade, 410 U.S. 113 (1973)." });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/unexpected body for citation_lookup/i);
+    // The property that matters is that no success payload is produced: the
+    // old coercion answered with citations_checked 0 / found 0 / results [],
+    // byte-identical to a document that cites nothing.
+    expect(res.content[0].text).not.toMatch(/citations_checked/);
+  });
+
+  it("citation_lookup refuses a null body rather than reporting a clean document", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const res: any = await call("citation_lookup", { text: "See Roe v. Wade, 410 U.S. 113 (1973)." });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/got null/i);
+  });
 });
 
 describe("a rejected token", () => {
