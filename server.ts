@@ -380,12 +380,38 @@ async function clPost(
   });
 }
 
-/** Pull the DRF `results` array out of a list/search envelope, defensively. */
-function extractResults(json: unknown): Row[] {
-  if (json && typeof json === "object" && Array.isArray((json as Row).results)) {
-    return (json as Row).results as Row[];
+/**
+ * Pull the DRF `results` array out of a list/search envelope.
+ *
+ * An empty `results` array is a real answer: there are no matches. A body with
+ * no `results` array is not an answer at all, and the two must never render the
+ * same. Returning [] for both meant a renamed envelope key or a different
+ * wrapper would make every list and search tool report `returned: 0,
+ * results: []` behind an HTTP 200 — indistinguishable, to a caseworker, from
+ * "there are no cases like this."
+ *
+ * All eight callers read a DRF list/search endpoint. citation_lookup is the one
+ * bare-array response in this server and it is unpacked at its own call site,
+ * not here (checked, not assumed).
+ */
+function extractResults(json: unknown, source: string): Row[] {
+  const tail =
+    "Reporting this as zero matches would be indistinguishable from there being none, " +
+    "so it is surfaced as an error instead.";
+  if (json && typeof json === "object" && !Array.isArray(json)) {
+    const results = (json as Row).results;
+    if (Array.isArray(results)) return results as Row[];
+    const keys = Object.keys(json as Row);
+    throw new PermanentError(
+      `CourtListener returned an unexpected envelope for ${source}: no \`results\` array. ` +
+        `Keys received: ${keys.length ? keys.slice(0, 12).join(", ") : "(none)"}. ${tail}`,
+    );
   }
-  return [];
+  const got = Array.isArray(json) ? "a bare array" : json === null ? "null" : typeof json;
+  throw new PermanentError(
+    `CourtListener returned an unexpected body for ${source}: expected a { results: [...] } ` +
+      `envelope, got ${got}. ${tail}`,
+  );
 }
 
 /**
@@ -1047,7 +1073,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
     order_by,
     cursor: cursor ?? undefined,
   });
-  const results = extractResults(json).slice(0, limit).map(normalizeOpinionHit);
+  const results = extractResults(json, "opinion_search (/search/?type=o)").slice(0, limit).map(normalizeOpinionHit);
   return {
     query: {
       q,
@@ -1099,7 +1125,7 @@ async function docketLookup(args: Row): Promise<unknown> {
     court: court ?? undefined,
     cursor: cursor ?? undefined,
   });
-  const results = extractResults(json).slice(0, limit).map(normalizeDocketHit);
+  const results = extractResults(json, "docket_lookup (/search/?type=r)").slice(0, limit).map(normalizeDocketHit);
   return {
     query: { q: q ?? null, docket_number: docketNumber ?? null, court: court ?? null, cursor: cursor ?? null },
     total_matches: num((json as Row).count),
@@ -1135,7 +1161,7 @@ async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Pr
   let complete = false;
   for (let page = 1; page <= MAX_COURT_PAGES; page++) {
     const json = await clGet("/courts/", { jurisdiction: jurisdiction ?? undefined, page });
-    all.push(...extractResults(json));
+    all.push(...extractResults(json, "court_list (/courts/)"));
     const hasNext = str((json as Row).next) != null;
     if (!hasNext) {
       complete = true;
@@ -1283,7 +1309,7 @@ async function judgeLookup(args: Row): Promise<unknown> {
     name_last: nameLast ?? undefined,
     name_first: nameFirst ?? undefined,
   });
-  const results = extractResults(json).slice(0, limit).map(normalizeJudge);
+  const results = extractResults(json, "judge_lookup (/people/)").slice(0, limit).map(normalizeJudge);
   return {
     query: { name_last: nameLast ?? null, name_first: nameFirst ?? null },
     returned: results.length,
@@ -1309,7 +1335,7 @@ async function citedBy(args: Row): Promise<unknown> {
     order_by,
     cursor: cursor ?? undefined,
   });
-  const results = extractResults(json).slice(0, limit).map(normalizeOpinionHit);
+  const results = extractResults(json, "cited_by (/search/?type=o)").slice(0, limit).map(normalizeOpinionHit);
   return {
     query: { opinion_id: opinionId, order_by: orderKey, cursor: cursor ?? null },
     total_citing: num((json as Row).count),
@@ -1335,11 +1361,19 @@ async function caseAuthorities(args: Row): Promise<unknown> {
     { citing_opinion: opinionId, page_size: limit },
     { requireAuth: true },
   );
-  const results = extractResults(json).slice(0, limit).map(normalizeCitedPair);
+  const results = extractResults(json, "case_authorities (/opinions-cited/)").slice(0, limit).map(normalizeCitedPair);
   const totalAuthorities = num((json as Row).count);
   return {
     query: { opinion_id: opinionId },
-    // v4 cursor pagination often omits the count; null means "not reported".
+    // v4 cursor-paginated list endpoints do not OMIT `count` — they DEFER it:
+    // the field arrives as a URL string pointing at the same query with
+    // ?count=on, so num() of it is null. Verified live 2026-09-14 on
+    // /audio/?stt_status=3, whose `count` was the literal string
+    // "https://www.courtlistener.com/api/rest/v4/audio/?count=on&stt_status=3",
+    // and the same query with ?count=on returned {"count": 708}. null means
+    // "not reported here — ask again with ?count=on", never zero. That second
+    // request is deliberately not issued automatically: it is an extra and
+    // more expensive round trip on a free endpoint.
     total_authorities: totalAuthorities,
     total_reported: totalAuthorities != null,
     returned: results.length,
@@ -1366,12 +1400,13 @@ async function docketEntries(args: Row): Promise<unknown> {
     { docket: docketId, page_size: limit, cursor: cursor ?? undefined },
     { requireAuth: true },
   );
-  const results = extractResults(json).slice(0, limit).map(normalizeDocketEntry);
+  const results = extractResults(json, "docket_entries (/docket-entries/)").slice(0, limit).map(normalizeDocketEntry);
   const totalEntries = num((json as Row).count);
   return {
     query: { docket_id: docketId, cursor: cursor ?? null },
-    // v4 cursor pagination often omits the count; null means "not reported",
-    // not zero — returned + next_cursor are the real signals.
+    // Same deferred-count mechanism as case_authorities above: `count` arrives
+    // as a ?count=on URL string, so null means "not reported here — ask again
+    // with ?count=on", never zero. returned + next_cursor are the real signals.
     total_entries: totalEntries,
     total_reported: totalEntries != null,
     returned: results.length,
@@ -1411,7 +1446,7 @@ async function oralArguments(args: Row): Promise<unknown> {
     argued_before: arguedBefore,
     cursor: cursor ?? undefined,
   });
-  const results = extractResults(json).slice(0, limit).map(normalizeOralArgumentHit);
+  const results = extractResults(json, "oral_arguments (/search/?type=oa)").slice(0, limit).map(normalizeOralArgumentHit);
   return {
     query: { q, court: court ?? null, argued_after: arguedAfter ?? null, argued_before: arguedBefore ?? null, cursor: cursor ?? null },
     total_matches: num((json as Row).count),

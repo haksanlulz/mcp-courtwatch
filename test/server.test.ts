@@ -1096,6 +1096,69 @@ describe("docket_lookup fielded docket number", () => {
   });
 });
 
+describe("an unexpected response envelope", () => {
+  // The contrast with "returns an empty result set cleanly" (opinion_search,
+  // above) is the whole point: an empty `results` array is a real answer, a
+  // body with no `results` array is not an answer at all, and a caseworker
+  // reading "returned: 0" cannot tell them apart.
+  it.each([
+    ['{"detail":"ok"}', { detail: "ok" }],
+    ["a bare array", [{ caseName: "x" }]],
+    ["a JSON string", "results"],
+    ["null", null],
+  ])("surfaces %s as an error rather than zero matches", async (_label, body) => {
+    fetchMock.mockResolvedValue(jsonResponse(body));
+    const res: any = await call("opinion_search", { q: "eviction" });
+
+    expect(res.isError).toBe(true);
+    const text = res.content[0].text as string;
+    expect(text).toMatch(/unexpected (envelope|body)/i);
+    expect(text).toContain("opinion_search");
+    expect(text).not.toMatch(/returned.*0/);
+  });
+
+  it("names the keys it actually received, so the change is diagnosable", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ count: 3, items: [], cursor: null }));
+    const res: any = await call("docket_lookup", { q: "eviction" });
+    const text = res.content[0].text as string;
+    expect(text).toContain("count, items, cursor");
+    expect(text).toContain("docket_lookup");
+  });
+
+  it("is not retried — a changed shape answers the same however often it is asked", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: "ok" }));
+    await call("opinion_search", { q: "x" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("every list and search tool refuses the same body", async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["opinion_search", { q: "x" }],
+      ["docket_lookup", { q: "x" }],
+      ["court_list", { jurisdiction: "F" }],
+      ["judge_lookup", { name_last: "Ginsburg" }],
+      ["cited_by", { opinion_id: 5 }],
+      ["case_authorities", { opinion_id: 5 }],
+      ["docket_entries", { docket_id: 5 }],
+      ["oral_arguments", { q: "x" }],
+    ];
+    for (const [tool, args] of calls) {
+      clearClCache();
+      __test.resetCourtCache();
+      fetchMock.mockResolvedValue(jsonResponse({ detail: "ok" }));
+      const res: any = await call(tool, args);
+      expect(res.isError, `${tool} must refuse a body with no results array`).toBe(true);
+      expect(res.content[0].text, tool).toContain(tool);
+    }
+  });
+
+  it("citation_lookup still accepts its bare-array response, which is its real shape", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(CITATION_LOOKUP_MIXED));
+    const body = payload(await call("citation_lookup", { text: "410 U.S. 113 and 999 U.S. 9999" }));
+    expect(body.citations_checked).toBe(2);
+  });
+});
+
 describe("a rejected token", () => {
   // token() writes careful setup guidance when COURTLISTENER_API_TOKEN is
   // UNSET. optionalToken() checks truthiness only, so a wrong, expired, or
