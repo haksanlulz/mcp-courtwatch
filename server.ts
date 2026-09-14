@@ -72,11 +72,16 @@ function envInt(name: string, fallback: number, min: number): number {
 /** Minimum spacing between outbound API calls (polite throttle). New
  * CourtListener accounts are throttled at 5 requests/min; set
  * COURTWATCH_THROTTLE_MS=13000 to pace under that until the account limit
- * rises. Invalid values fall back to the default. */
-const THROTTLE_MS = (() => {
-  const v = Number(process.env.COURTWATCH_THROTTLE_MS);
-  return Number.isFinite(v) && v >= 0 ? v : 200;
-})();
+ * rises.
+ *
+ * The fourth numeric setting, and it kept its own ad-hoc reader through the
+ * round that validated the other three: `Number("")` is 0, so a client config
+ * carrying an empty "COURTWATCH_THROTTLE_MS": "" removed the outbound throttle
+ * against a nonprofit's free endpoint and said nothing, and a non-numeric value
+ * fell back with none of the stderr line its three siblings write. 0 is still a
+ * legitimate value (the offline suite sets it deliberately) — envInt's minimum
+ * is 0, and what it rejects is "" and everything unparseable. */
+const THROTTLE_MS = envInt("COURTWATCH_THROTTLE_MS", 200, 0);
 /** Upper bound on results returned by a single search/list tool call. */
 const MAX_RESULTS = 50;
 /**

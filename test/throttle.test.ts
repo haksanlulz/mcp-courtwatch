@@ -136,3 +136,50 @@ describe("throttle", () => {
     expect(starts[1] - starts[0]).toBe(0);
   });
 });
+
+// COURTWATCH_THROTTLE_MS is the fourth numeric setting and it kept an ad-hoc
+// reader through the round that validated the other three. `Number("")` is 0,
+// so an empty value in a client config removed the throttle silently — the one
+// setting whose failure mode is "hammer a nonprofit's free endpoint".
+describe("COURTWATCH_THROTTLE_MS validation", () => {
+  /** The two request STARTS a fresh server issues at whatever gap is in force. */
+  async function measureGap(): Promise<number> {
+    const client = await freshClient();
+    const starts: number[] = [];
+    fetchMock.mockImplementation(async () => {
+      starts.push(Date.now());
+      return jsonResponse(EMPTY_PAGE);
+    });
+    const calls = [search(client, "a"), search(client, "b")];
+    await vi.advanceTimersByTimeAsync(10 * GAP);
+    await Promise.all(calls);
+    expect(starts).toHaveLength(2);
+    return starts[1] - starts[0];
+  }
+
+  it("an empty value is not a zero gap", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.COURTWATCH_THROTTLE_MS = "";
+
+    expect(await measureGap(), "an empty setting removed the throttle").toBeGreaterThanOrEqual(200);
+    expect(stderr.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("COURTWATCH_THROTTLE_MS");
+  });
+
+  it("an unparseable value falls back and says so on stderr", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.COURTWATCH_THROTTLE_MS = "abc";
+
+    expect(await measureGap()).toBeGreaterThanOrEqual(200);
+    // The fallback was already right here; the silence was not. Three sibling
+    // settings name themselves on stderr and this one did not.
+    expect(stderr.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("COURTWATCH_THROTTLE_MS");
+  });
+
+  it("a valid value is used and says nothing", async () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.COURTWATCH_THROTTLE_MS = "750";
+
+    expect(await measureGap()).toBeGreaterThanOrEqual(750);
+    expect(stderr).not.toHaveBeenCalled();
+  });
+});
