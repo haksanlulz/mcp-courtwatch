@@ -471,6 +471,36 @@ describe("opinion_search", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // The option tables are plain object literals, so they inherit
+  // Object.prototype: ORDER_BY["toString"] is a truthy function and
+  // "constructor" in OA_ORDER_BY is true. The two validators were a truthiness
+  // check and an `in` check, so these passed and were stringified into the
+  // outgoing query. The inputSchema enum does not help — the low-level SDK
+  // Server does no schema validation, so the handler is the only gate.
+  it.each(["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"])(
+    "rejects the inherited key %s on every tool that takes order_by",
+    async (orderKey) => {
+      for (const [tool, args] of [
+        ["opinion_search", { q: "x" }],
+        ["cited_by", { opinion_id: 5 }],
+        ["oral_arguments", { q: "x" }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        const res: any = await call(tool, { ...args, order_by: orderKey });
+        expect(res.isError, `${tool} accepted order_by=${orderKey}`).toBe(true);
+        expect(res.content[0].text, tool).toMatch(/order_by must be one of/);
+        expect(fetchMock, `${tool} sent a request for order_by=${orderKey}`).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("still accepts relevance, whose oral-argument value is legitimately undefined", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+    const res: any = await call("oral_arguments", { q: "x", order_by: "relevance" });
+    expect(res.isError).toBeFalsy();
+    // The search default: the parameter is omitted rather than sent empty.
+    expect(lastUrl().searchParams.has("order_by")).toBe(false);
+  });
+
   it("surfaces an HTTP 500 as isError, after exhausting retries", async () => {
     // A 5xx is retried (see withRetry), so the mock must answer every attempt.
     fetchMock.mockResolvedValue(textResponse("upstream boom", { ok: false, status: 500 }));

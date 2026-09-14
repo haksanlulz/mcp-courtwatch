@@ -1018,6 +1018,31 @@ function stripDanglingEscape(q: string): string {
   return q.slice(0, q.length - run[0].length) + "\\".repeat(balanced);
 }
 
+/**
+ * Look up an allow-listed option, without Object.prototype answering for it.
+ *
+ * The option tables here are plain object literals, so they inherit
+ * Object.prototype: `ORDER_BY["toString"]` is a truthy function and
+ * `"constructor" in OA_ORDER_BY` is true. Both validators were written as a
+ * truthiness check and an `in` check respectively, so `order_by: "toString"`
+ * passed and was then stringified into the outgoing query as
+ * "function toString() { [native code] }".
+ *
+ * The enum in the tool's inputSchema does not catch it either: the low-level
+ * SDK Server does no inputSchema validation (no `inputSchema` reference in
+ * node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js), so the
+ * schema is advisory and the handler is the only gate.
+ *
+ * hasOwnProperty is the test, not truthiness: OA_ORDER_BY.relevance is
+ * legitimately undefined (the search default), and that is a real option.
+ */
+function pickOption<T>(table: Record<string, T>, key: string, label: string): T {
+  if (!Object.prototype.hasOwnProperty.call(table, key)) {
+    throw new Error(`${label} must be one of: ${Object.keys(table).join(", ")}.`);
+  }
+  return table[key];
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -1313,10 +1338,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
   const filedAfter = normDate(args.filed_after, "filed_after");
   const filedBefore = normDate(args.filed_before, "filed_before");
   const orderKey = str(args.order_by) ?? "relevance";
-  const order_by = ORDER_BY[orderKey];
-  if (!order_by) {
-    throw new Error(`order_by must be one of: ${Object.keys(ORDER_BY).join(", ")}.`);
-  }
+  const order_by = pickOption(ORDER_BY, orderKey, "order_by");
   const cursor = str(args.cursor);
 
   // Named once and handed to both: clGet validates the envelope before caching
@@ -1619,8 +1641,7 @@ async function citedBy(args: Row): Promise<unknown> {
     throw new Error("opinion_id is required (a positive numeric OPINION id; a cluster's case_detail lists its sub_opinion_ids).");
   }
   const orderKey = str(args.order_by) ?? "newest";
-  const order_by = ORDER_BY[orderKey];
-  if (!order_by) throw new Error(`order_by must be one of: ${Object.keys(ORDER_BY).join(", ")}.`);
+  const order_by = pickOption(ORDER_BY, orderKey, "order_by");
   const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
   const cursor = str(args.cursor);
 
@@ -1732,9 +1753,9 @@ async function oralArguments(args: Row): Promise<unknown> {
   if (!q) throw new Error("q is required (case name, party, or topic).");
   const court = str(args.court);
   const orderKey = str(args.order_by) ?? "relevance";
-  if (!(orderKey in OA_ORDER_BY)) {
-    throw new Error(`order_by must be one of: ${Object.keys(OA_ORDER_BY).join(", ")}.`);
-  }
+  // undefined is the value of `relevance` here, so this is a lookup, not a
+  // truthiness check — and an own-property lookup, so "constructor" is not one.
+  const orderValue = pickOption(OA_ORDER_BY, orderKey, "order_by");
   const arguedAfter = normDate(args.argued_after, "argued_after");
   const arguedBefore = normDate(args.argued_before, "argued_before");
   const limit = clampLimit(args.limit, SEARCH_PAGE_SIZE, SEARCH_PAGE_SIZE);
@@ -1747,7 +1768,7 @@ async function oralArguments(args: Row): Promise<unknown> {
       q: stripDanglingEscape(q),
       type: SEARCH_TYPE_ORAL_ARGUMENT,
       court: court ?? undefined,
-      order_by: OA_ORDER_BY[orderKey],
+      order_by: orderValue,
       argued_after: arguedAfter,
       argued_before: arguedBefore,
       cursor: cursor ?? undefined,
