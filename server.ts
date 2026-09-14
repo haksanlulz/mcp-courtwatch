@@ -40,6 +40,35 @@ const CL_WEB = "https://www.courtlistener.com";
 const TOKEN_SIGNUP_URL = "https://www.courtlistener.com/help/api/rest/";
 /** Descriptive User-Agent (CourtListener is a free public service; be identifiable). */
 const UA = "mcp-courtwatch/1.0 (+https://github.com/haksanlulz/mcp-courtwatch)";
+
+/**
+ * Read an integer setting from the environment, falling back to the documented
+ * default on anything unparseable, non-integer, or below `min`, and saying so
+ * once on stderr.
+ *
+ * Every one of these numbers is arithmetic somebody downstream trusts, and NaN
+ * does not throw — it makes a comparison false forever. An unvalidated
+ * CL_HTTP_ATTEMPTS=abc skipped the whole retry loop and rethrew `undefined`; an
+ * unvalidated CL_CACHE_TTL_MS=abc made every cached entry immortal; an
+ * unvalidated CL_CACHE_MAX=abc removed the LRU bound. All three fail green.
+ *
+ * stderr, not stdout: stdout is the MCP stdio channel and any stray byte there
+ * corrupts the JSON-RPC stream.
+ */
+function envInt(name: string, fallback: number, min: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  const n = Number(trimmed);
+  if (trimmed === "" || !Number.isInteger(n) || n < min) {
+    console.error(
+      `mcp-courtwatch: ${name}=${JSON.stringify(raw)} is not an integer >= ${min}; using the default ${fallback}.`,
+    );
+    return fallback;
+  }
+  return n;
+}
+
 /** Minimum spacing between outbound API calls (polite throttle). New
  * CourtListener accounts are throttled at 5 requests/min; set
  * COURTWATCH_THROTTLE_MS=13000 to pace under that until the account limit
@@ -179,7 +208,9 @@ class HttpError extends Error {
 }
 class PermanentError extends Error {}
 
-const HTTP_ATTEMPTS = Number(process.env.CL_HTTP_ATTEMPTS ?? 3);
+/** Total attempts per request, including the first. Minimum 1: zero attempts
+ * would skip the loop body entirely and rethrow whatever `last` still held. */
+const HTTP_ATTEMPTS = envInt("CL_HTTP_ATTEMPTS", 3, 1);
 const RETRY_BACKOFF_MS = [500, 2000];
 const RETRY_DEADLINE_MS = 40_000;
 const HTTP_TIMEOUT_MS = 15_000;
@@ -254,8 +285,8 @@ async function readClResponse(res: { ok: boolean; status: number; text: () => Pr
 //
 // GET only. clPost is the citation-lookup endpoint, whose body is the real key
 // and whose results are already bounded per request.
-const CACHE_TTL_MS = Number(process.env.CL_CACHE_TTL_MS ?? 24 * 60 * 60 * 1000);
-const CACHE_MAX = Number(process.env.CL_CACHE_MAX ?? 300);
+const CACHE_TTL_MS = envInt("CL_CACHE_TTL_MS", 24 * 60 * 60 * 1000, 0);
+const CACHE_MAX = envInt("CL_CACHE_MAX", 300, 1);
 const respCache = new Map<string, { at: number; value: unknown }>();
 
 function cacheGet(key: string): unknown | undefined {
@@ -1367,6 +1398,37 @@ function withDisclaimer(result: unknown): unknown {
   return { ...(result as Record<string, unknown>), disclaimer: DISCLAIMER };
 }
 
+/** Render a caught value for display, without letting the rendering itself throw. */
+function describeThrown(err: unknown): string {
+  if (err === undefined) return "undefined";
+  if (err === null) return "null";
+  try {
+    const rendered = typeof err === "object" ? JSON.stringify(err) : String(err);
+    return (rendered ?? `a ${typeof err}`).slice(0, 200);
+  } catch {
+    return `a ${typeof err}`;
+  }
+}
+
+/**
+ * Turn whatever a handler threw into a message a caller can act on.
+ *
+ * `String(err)` on a non-Error throw rendered the literal text "Error: undefined",
+ * which names no tool, no stage, and no cause. The shape is not hypothetical: a
+ * NaN CL_HTTP_ATTEMPTS made withRetry skip its loop body and rethrow the
+ * still-unassigned `last`, so every tool answered "Error: undefined" having made
+ * no network call at all.
+ */
+function toolErrorMessage(tool: string, err: unknown): string {
+  if (err instanceof Error && err.message.trim() !== "") return err.message;
+  return (
+    `${tool} failed while handling the call and threw a non-Error value ` +
+    `(${describeThrown(err)}) instead of an error message. That is a bug in ` +
+    "mcp-courtwatch, not a CourtListener response; please report it with the " +
+    "tool name and arguments."
+  );
+}
+
 export function createServer(): Server {
   const server = new Server(
     { name: "mcp-courtwatch", version: "1.1.0" },
@@ -1385,9 +1447,8 @@ export function createServer(): Server {
       const result = await handler((args ?? {}) as Row);
       return { content: [{ type: "text", text: JSON.stringify(withDisclaimer(result), null, 2) }] };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
       return {
-        content: [{ type: "text", text: `Error: ${message}` }],
+        content: [{ type: "text", text: `Error: ${toolErrorMessage(name, err)}` }],
         isError: true,
       };
     }
