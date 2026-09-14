@@ -184,8 +184,20 @@ async function main(): Promise<void> {
   await run("case_authorities", async () => {
     const body = parse(await client.callTool({ name: "case_authorities", arguments: { opinion_id: 2812209, limit: 10 } }));
     console.log(`     -> ${body.total_authorities} authorit(ies); deepest: opinion ${body.results[0]?.cited_opinion_id ?? "(none)"} depth ${body.results[0]?.depth ?? "?"}`);
-    need(Array.isArray(body.results), "expected an authorities array");
+    // Both of the old assertions were server invariants — `results` is always
+    // an array (the handler maps extractResults' array) and `total_reported` is
+    // always a boolean (`totalAuthorities != null`) — so this check passed on
+    // `returned: 0`, the exact condition the header says this rung exists to
+    // catch. Obergefell's majority opinion relies on authorities; an empty
+    // table of authorities for it means the citing_opinion filter stopped
+    // filtering, not a real answer.
     need(typeof body.total_reported === "boolean", "total_reported should say whether the count was reported");
+    need(body.returned >= 1, `expected at least one authority for opinion 2812209, got ${body.returned}`);
+    positiveInt(body.results[0].cited_opinion_id, "results[0].cited_opinion_id");
+    need(
+      body.results[0].citing_opinion_id === 2812209,
+      `every row must be an authority OF the opinion asked for; got citing_opinion_id ${JSON.stringify(body.results[0].citing_opinion_id)}`,
+    );
   });
 
   await run("oral_arguments", async () => {
