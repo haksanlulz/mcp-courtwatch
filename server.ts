@@ -2109,7 +2109,7 @@ function toolErrorMessage(tool: string, err: unknown): string {
 
 export function createServer(): Server {
   const server = new Server(
-    { name: "mcp-courtwatch", version: "1.1.0" },
+    { name: "mcp-courtwatch", version: "1.2.0" },
     { capabilities: { tools: {} } },
   );
 

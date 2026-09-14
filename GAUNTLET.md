@@ -109,6 +109,20 @@ Check: `test/server.test.ts` (tagged `spec: records-not-advice`), asserted acros
 
 Every fix in this round was mutation-probed before being recorded here; the probes are listed in the README's Testing section with what each turns red.
 
+### 2026-09-14 (fix round 2) — 1.2.0: the half-fixes' other halves, and a version that never moved
+
+**The theme repeats one level in: a fix that stopped at the envelope it was given.** The round before taught `extractResults` to refuse an unexpected LIST envelope. `citation_lookup` reads the server's one BARE-ARRAY response and kept `Array.isArray(json) ? json : []`, so a non-array body rendered as `citations_checked: 0, found: 0, results: []` — byte-identical to a brief that cites nothing, in the one tool whose purpose is catching a fabricated cite. `extractResults`' own doc comment asserted that call site was "checked, not assumed". The DETAIL endpoints had no envelope check at all, and the suite pinned the permissive behavior: the id-validation block fed `case_detail` a list envelope and called the all-null result "a thin but valid record". A case with no name, no date and no citations is a missing record, not a thin one.
+
+**The sanitizer's own edge, pointing the other way.** `stripDanglingEscape` empties a `q` made only of dangling escapes, and `clGet` omits an empty parameter — so the search left with no `q`. Live: `/search/?type=o` with no `q` is HTTP 200 with **count 8,310,312**, every opinion in the database, reported back as `total_matches` for the caller's query. `docket_number` was already refused for exactly this shape one argument over, where it read as "no such docket"; the free-text half had the sanitizer and not the guard.
+
+**Two partial reads that presented as complete.** `judge_lookup` advertised `limit` 1-50 against `/people/`, which serves 20 and ignores `page_size` (verified live both ways), exposes no cursor and defers its `count` — so a caller asking for 50 got `returned: 20` with nothing saying more matched. And a `limit` below the page size drops rows that `next_cursor` then skips, because the cursor comes from the envelope: `limit: 3` of a 20-row page returns 3 and a cursor starting at row 21, while the `cursor` argument's own description tells the caller to page that way. `court_list`'s note claimed "the full courts table" even when the walk stopped at the 200-page cap — `complete` was already computed for the cache write and thrown away by the caller.
+
+**A rung with two assertions that could not fail.** `case_authorities` was given `Array.isArray(body.results)` and `typeof body.total_reported === "boolean"`; the handler always maps an array and always computes `totalAuthorities != null`, so the check passed on `returned: 0` — the precise condition `smoke.ts`'s own header says it exists to catch. Fault-injected: forcing zero rows turns the rung FAIL and the run exits 1.
+
+**⚠️ The version never moved.** 1.1.0 shipped an eleventh tool and the entire `.mcpb` channel, so the bundle filename and the MCP handshake did not distinguish that surface from the 10-tool 1.1.0 this file dates to 2026-08-23. Bumped to **1.2.0**, and the handshake was the third copy of the version that nothing compared — `mcpb-pack` cross-checks `manifest.json` against `package.json`, while the probe only *printed* what the server reported. It now asserts, mutation-probed: reporting 1.1.0 from a 1.2.0 bundle exits 1.
+
+Every fix in this round was mutation-probed before being recorded here. Gates after: `npm test` **170 passed**, typecheck clean, `verify:mcpb` PASS at 11 tools, and the live `npm run smoke` **11 passed / 0 failed / 0 skipped** at `COURTWATCH_THROTTLE_MS=13000`.
+
 ### Dependency advisories — 2026-09-14
 
 `npm audit` reports **7 (4 low, 2 moderate, 1 high)**. Scoped, because the number alone is not the finding:

@@ -138,6 +138,17 @@ try {
   if (!init?.result) fail(`no initialize response. stderr: ${err.slice(0, 600)}`);
   ok(`initialize -> ${init.result.serverInfo?.name}@${init.result.serverInfo?.version}`);
 
+  // The handshake version is a THIRD copy of the version, and it was the one
+  // nothing compared: mcpb-pack cross-checks manifest.json against
+  // package.json, and this line only printed what the server reported. 1.1.0
+  // shipped an eleventh tool and the whole .mcpb channel while the bundle
+  // filename and the handshake still read as the 10-tool 1.1.0.
+  const servedVersion = init.result.serverInfo?.version;
+  if (servedVersion !== manifest.version) {
+    fail(`server reports version ${servedVersion}, bundle says ${manifest.version}`);
+  }
+  ok(`served version matches the bundle (${manifest.version})`);
+
   send({ jsonrpc: "2.0", id: 2, method: "notifications/initialized", params: {} });
   send({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} });
   const listed = await waitFor(3, 15000);

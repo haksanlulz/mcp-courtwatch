@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "mcp-courtwatch",
   "display_name": "CourtWatch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Free U.S. legal research over CourtListener: case-law and docket search, a free citator check, tables of authorities, RECAP filing histories, oral-argument transcripts, and citation verification that catches fabricated cites.",
   "long_description": "An MCP server over CourtListener, the Free Law Project's open legal database. Built for legal aid, tenant defense, pro-se litigants and public-interest lawyers who cannot afford Westlaw or PACER.\n\nSeven of the eleven tools work with no account at all, including `cited_by` — the free citator check for who is still relying on a case — and `oral_argument_transcript`. A free CourtListener API token unlocks the other four and raises the rate limit on all of them; it is optional, so the server is useful the moment it is installed.\n\nEvery result is framed as raw public court records rather than as advice, in the payload itself, and `citation_lookup` exists so that a fabricated citation comes back unfound rather than plausible.",
   "author": {

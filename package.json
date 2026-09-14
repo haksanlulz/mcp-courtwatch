@@ -1,6 +1,6 @@
 {
   "name": "@haksanlulz/mcp-courtwatch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "MCP server over CourtListener (Free Law Project) for free U.S. legal research: case-law and docket search, a free citator check (who cites this case), tables of authorities, RECAP docket filing histories, oral-argument audio, judges, and citation verification that catches fabricated cites. Built for legal aid, tenant defense, pro-se litigants, and public-interest lawyers.",
   "type": "module",
   "license": "MIT",
