@@ -602,6 +602,27 @@ describe("court_list", () => {
     // The match lived on page 2 and was still found.
     expect(body.returned).toBe(1);
     expect(body.courts[0].id).toBe("nysd");
+    // A completed walk is what the unconditional note used to claim always.
+    expect(String(body.note)).toMatch(/full courts table/i);
+  });
+
+  // The walk stops at MAX_COURT_PAGES (200) on a table that only grows. Past
+  // the cap the filter runs over a PREFIX, and the note claimed the full table
+  // either way.
+  it("says so when the page cap stopped the walk, instead of claiming the full table", async () => {
+    // Every page reports a next, so the walk runs to the cap and never completes.
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        count: 99999,
+        next: "https://www.courtlistener.com/api/rest/v4/courts/?page=999",
+        results: [{ id: "scotus", full_name: "Supreme Court of the United States", jurisdiction: "F", in_use: true }],
+      }),
+    );
+    const body = payload(await call("court_list", { q: "no-such-court" }));
+    expect(fetchMock).toHaveBeenCalledTimes(200);
+    expect(String(body.note)).toMatch(/safety cap/i);
+    expect(String(body.note)).not.toMatch(/full courts table/i);
+    expect(String(body.note)).toMatch(/cannot appear here even if it matches/i);
   });
 });
 

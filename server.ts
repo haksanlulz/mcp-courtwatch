@@ -1579,9 +1579,14 @@ async function docketLookup(args: Row): Promise<unknown> {
 const COURT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 let courtCache: { rows: Row[]; at: number } | null = null;
 
-async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Promise<Row[]> {
+async function fetchCourts(
+  jurisdiction: string | undefined,
+  stopAt: number,
+): Promise<{ rows: Row[]; complete: boolean }> {
+  // Only a COMPLETE walk is ever cached (see the write below), so a cache hit
+  // is complete by construction.
   if (!jurisdiction && courtCache && Date.now() - courtCache.at < COURT_CACHE_TTL_MS) {
-    return courtCache.rows;
+    return { rows: courtCache.rows, complete: true };
   }
   const all: Row[] = [];
   let complete = false;
@@ -1601,7 +1606,7 @@ async function fetchCourts(jurisdiction: string | undefined, stopAt: number): Pr
     if (all.length >= stopAt) break;
   }
   if (!jurisdiction && complete) courtCache = { rows: all, at: Date.now() };
-  return all;
+  return { rows: all, complete };
 }
 
 async function courtList(args: Row): Promise<unknown> {
@@ -1612,7 +1617,7 @@ async function courtList(args: Row): Promise<unknown> {
   // With a name filter we must scan the whole table (server ignores page_size),
   // or common courts past the first page are silently missed. Without one, we
   // only need enough pages to satisfy `limit`.
-  const rows = await fetchCourts(jurisdiction ?? undefined, nameFilter ? Infinity : limit);
+  const { rows, complete } = await fetchCourts(jurisdiction ?? undefined, nameFilter ? Infinity : limit);
 
   let courts = rows.map(normalizeCourt);
   if (nameFilter) {
@@ -1626,8 +1631,13 @@ async function courtList(args: Row): Promise<unknown> {
   return {
     query: { jurisdiction: jurisdiction ?? null, q: str(args.q) ?? null },
     returned: courts.length,
+    // The walk can stop at MAX_COURT_PAGES on a table that only grows, and the
+    // note used to claim the full table either way — so past the cap the filter
+    // would run over a prefix while the payload said it had searched all of it.
     note: nameFilter
-      ? "The q filter is applied across the full courts table, paged server-side; scope by jurisdiction to page less."
+      ? complete
+        ? "The q filter is applied across the full courts table, paged server-side; scope by jurisdiction to page less."
+        : `The walk stopped at the ${MAX_COURT_PAGES}-page safety cap, so this filter ran over the first ${rows.length} courts only — a court past that point cannot appear here even if it matches. Scope by jurisdiction.`
       : undefined,
     courts,
   };
