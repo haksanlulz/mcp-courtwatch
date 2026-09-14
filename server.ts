@@ -465,6 +465,38 @@ function extractResults(json: unknown, source: string): Row[] {
 }
 
 /**
+ * Assert a detail endpoint answered with the record that was asked for.
+ *
+ * extractResults refuses an unexpected LIST envelope; the detail endpoints had
+ * no equivalent, so a body carrying no matching `id` — a list envelope, an
+ * error object served with a 200, a changed serializer — normalized into a
+ * record whose every field is null and was returned as a successful answer. A
+ * case with no name, no date and no citations is a missing record, not a thin
+ * one.
+ *
+ * `id` is the right anchor: all three detail responses echo it (live
+ * 2026-09-14, /audio/106247/?fields=id,stt_status,duration -> {"id":106247,...};
+ * /clusters/ and /opinions/ are token-gated, and both normalizers already read
+ * `.id` off them).
+ */
+function expectDetail(json: unknown, id: number, source: string): Row {
+  const isObject = json != null && typeof json === "object" && !Array.isArray(json);
+  if (isObject && num((json as Row).id) === id) return json as Row;
+  const got = isObject
+    ? `keys: ${Object.keys(json as Row).slice(0, 12).join(", ") || "(none)"}`
+    : Array.isArray(json)
+      ? "an array"
+      : json === null
+        ? "null"
+        : typeof json;
+  throw new PermanentError(
+    `CourtListener returned an unexpected body for ${source}: expected the record with id ${id}, got ${got}. ` +
+      "Normalizing it would produce a record whose fields are all null, which is indistinguishable from a " +
+      "real case with nothing on file, so it is surfaced as an error instead.",
+  );
+}
+
+/**
  * Extract the opaque `cursor` value from a DRF envelope's `next` URL, or null
  * when there is no next page. CourtListener's /search/ `next` looks like
  * `.../search/?cursor=<value>&q=...`; we surface just the cursor so a caller can
@@ -1578,10 +1610,10 @@ async function caseDetail(args: Row): Promise<unknown> {
   // clGet throw the token() setup error before any network call when unset.
   if (kind === "opinion") {
     const o = await clGet(`/opinions/${id}/`, {}, { requireAuth: true });
-    return normalizeOpinionDetail(o as Row);
+    return normalizeOpinionDetail(expectDetail(o, id, `case_detail (/opinions/${id}/)`));
   }
   const c = await clGet(`/clusters/${id}/`, {}, { requireAuth: true });
-  return normalizeClusterDetail(c as Row);
+  return normalizeClusterDetail(expectDetail(c, id, `case_detail (/clusters/${id}/)`));
 }
 
 async function citationLookup(args: Row): Promise<unknown> {
@@ -1916,7 +1948,11 @@ async function oralArgumentTranscript(args: Row): Promise<unknown> {
 
   // /audio/{id}/ answers unauthenticated (verified live 2026-09-14); the token
   // is attached opportunistically, for the higher rate limit only.
-  const a = (await clGet(`/audio/${audioId}/`)) as Row;
+  const a = expectDetail(
+    await clGet(`/audio/${audioId}/`),
+    audioId,
+    `oral_argument_transcript (/audio/${audioId}/)`,
+  );
 
   const full = typeof a.stt_transcript === "string" ? a.stt_transcript : "";
   if (rawOffset > full.length) {

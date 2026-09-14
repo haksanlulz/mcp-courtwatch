@@ -1680,12 +1680,62 @@ describe("positive-integer id validation", () => {
   });
 
   it.each(ID_TOOLS)("%s accepts a valid %s", async (tool, field) => {
-    fetchMock.mockResolvedValue(jsonResponse({ count: 0, next: null, results: [] }));
+    // `id: 5` is here because case_detail reads a DETAIL endpoint: the body
+    // must be the record that was asked for, not a list envelope. This mock
+    // used to be the bare envelope and the comment called the all-null result
+    // "a thin but valid record" — which is what expectDetail now refuses.
+    fetchMock.mockResolvedValue(jsonResponse({ id: 5, count: 0, next: null, results: [] }));
     const res: any = await call(tool, { [field]: 5 });
-    // case_detail reads a detail endpoint, so an empty envelope is a thin but
-    // valid record; what matters here is that the guard let it through.
     expect(res.isError, `${tool} rejected a valid ${field}`).toBeFalsy();
     expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
+describe("a detail endpoint must answer with the record that was asked for", () => {
+  // The list/search envelope has extractResults; the detail endpoints had
+  // nothing, so a body carrying no matching id normalized to a record whose
+  // every field is null and went back as a success. A case with no name, no
+  // date and no citations is a missing record, not a thin one.
+  const BAD_BODIES: Array<[string, unknown]> = [
+    ["a list envelope", { count: 0, next: null, results: [] }],
+    ["a 200-served error object", { detail: "Not found." }],
+    ["an array", [{ id: 5 }]],
+    ["null", null],
+    ["another record's id", { id: 99, case_name: "Some Other Case" }],
+  ];
+
+  it.each(BAD_BODIES)("case_detail (cluster) refuses %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const res: any = await call("case_detail", { id: 5 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+  });
+
+  it.each(BAD_BODIES)("case_detail (opinion) refuses %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const res: any = await call("case_detail", { id: 5, type: "opinion" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+  });
+
+  it.each(BAD_BODIES)("oral_argument_transcript refuses %s", async (_label, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+    const res: any = await call("oral_argument_transcript", { audio_id: 5 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+  });
+
+  it("a null body is named as null, not as a raw property-access crash", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const res: any = await call("oral_argument_transcript", { audio_id: 5 });
+    expect(res.content[0].text).toMatch(/got null/i);
+    expect(res.content[0].text).not.toMatch(/Cannot read properties/i);
+  });
+
+  it("the real records still pass — the check must not refuse a good body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(CLUSTER));
+    const body = payload(await call("case_detail", { id: 9335501 }));
+    expect(body.case_name).toBe("Miranda v. Selig");
   });
 });
 
