@@ -13,7 +13,7 @@
  * spawns it, and speaks MCP JSON-RPC over stdio.
  *
  * COURTLISTENER_API_TOKEN is stripped from the child's environment. The token
- * is optional by design and six tools are keyless; a probe that inherited the
+ * is optional by design and seven tools are keyless; a probe that inherited the
  * author's token would prove nothing about the keyless path and would quietly
  * become a test that needs a secret.
  *
