@@ -347,7 +347,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("tool registration", () => {
-  it("lists exactly the ten documented tools", async () => {
+  it("lists exactly the eleven documented tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "case_authorities",
@@ -359,6 +359,7 @@ describe("tool registration", () => {
       "docket_lookup",
       "judge_lookup",
       "opinion_search",
+      "oral_argument_transcript",
       "oral_arguments",
     ]);
     for (const t of tools) {
@@ -1093,6 +1094,241 @@ describe("docket_lookup fielded docket number", () => {
       expect(q, `q for ${JSON.stringify(raw)}`).not.toContain("\\");
       expect(q.startsWith('docketNumber:"') && q.endsWith('"')).toBe(true);
     }
+  });
+});
+
+// An /audio/{id}/ record, field names as the live API serves them
+// (unauthenticated, 2026-09-14). Audio 106247 is a 1,051-second circuit
+// argument whose real transcript is 13,974 characters; the text is abbreviated
+// here, the shape is not.
+function audioRecord(over: Record<string, unknown> = {}) {
+  return {
+    id: 106247,
+    absolute_url: "/audio/106247/mikes-auto-body-of-glenwood-city-v-st-croix-county/",
+    case_name: "Mike's Auto Body of Glenwood City v. St. Croix County",
+    case_name_full: "Mike's Auto Body of Glenwood City v. St. Croix County",
+    docket: "https://www.courtlistener.com/api/rest/v4/dockets/70000000/",
+    download_url: "https://storage.courtlistener.com/mp3/2026/09/02/argument.mp3",
+    duration: 1051,
+    judges: "Kirk, Hruz, Gill",
+    local_path_mp3: "mp3/2026/09/02/argument.mp3",
+    processing_complete: true,
+    sha1: "abc",
+    source: "C",
+    stt_source: 1,
+    stt_status: 1,
+    stt_transcript: "ABCDEFGHIJ",
+    ...over,
+  };
+}
+
+describe("oral_argument_transcript", () => {
+  it("returns the Whisper transcript, keyless, with the machine-generated provenance", async () => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord()));
+    const body = payload(await call("oral_argument_transcript", { audio_id: 106247 }));
+
+    expect(lastUrl().pathname).toBe("/api/rest/v4/audio/106247/");
+    expect(lastInit().headers.Authorization).toBeUndefined(); // the endpoint is keyless
+    expect(body.stt_status).toBe(1);
+    expect(body.stt_verdict).toBe("COMPLETE");
+    expect(body.transcript_usable).toBe(true);
+    expect(body.text).toBe("ABCDEFGHIJ");
+    expect(body.transcript_chars).toBe(10);
+    expect(body.returned_chars).toBe(10);
+    expect(body.truncated).toBe(false);
+    expect(body.next_offset).toBeNull();
+    expect(body.stt_source).toBe("OpenAI API whisper-1");
+    expect(body.machine_generated).toBe(true);
+    expect(String(body.provenance)).toMatch(/not a court reporter/i);
+    expect(body.case_name).toBe("Mike's Auto Body of Glenwood City v. St. Croix County");
+    expect(body.duration_seconds).toBe(1051);
+  });
+
+  it("truncates at max_chars and hands back a next_offset that actually resumes", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(audioRecord()));
+    const first = payload(await call("oral_argument_transcript", { audio_id: 106247, max_chars: 4 }));
+    expect(first.text).toBe("ABCD");
+    expect(first.returned_chars).toBe(4);
+    expect(first.truncated).toBe(true);
+    expect(first.next_offset).toBe(4);
+
+    const second = payload(
+      await call("oral_argument_transcript", { audio_id: 106247, offset: first.next_offset, max_chars: 4 }),
+    );
+    expect(second.text).toBe("EFGH");
+    expect(second.offset).toBe(4);
+    expect(second.next_offset).toBe(8);
+
+    const last = payload(
+      await call("oral_argument_transcript", { audio_id: 106247, offset: second.next_offset, max_chars: 4 }),
+    );
+    expect(last.text).toBe("IJ");
+    expect(last.truncated).toBe(false);
+    expect(last.next_offset).toBeNull();
+
+    // The pages reassemble into the whole transcript, in order, with no gap.
+    expect(first.text + second.text + last.text).toBe("ABCDEFGHIJ");
+  });
+
+  it("caps max_chars at the documented maximum", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord({ stt_transcript: "x".repeat(120_000) })));
+    const body = payload(await call("oral_argument_transcript", { audio_id: 106247, max_chars: 999_999 }));
+    expect(body.max_chars).toBe(50_000);
+    expect(body.returned_chars).toBe(50_000);
+    expect(body.truncated).toBe(true);
+    expect(body.transcript_chars).toBe(120_000);
+  });
+
+  // stt_status is an enum, not a flag, and its failure values are not rare: of
+  // 103,278 audio records on 2026-09-14, 708 are status 3, 154 are 4, 77 are 5,
+  // 46 are 2 and 16 are 0. Numbers and names from cl/audio/models.py.
+  it.each([
+    [0, "TRANSCRIPTION_NEEDED"],
+    [2, "TRANSCRIPTION_FAILED"],
+    [3, "TRANSCRIPTION_DOES_NOT_MATCH_AUDIO"],
+    [4, "AUDIO_FILE_TOO_BIG"],
+    [5, "AUDIO_FILE_MISSING"],
+  ])("stt_status %i maps to %s and returns no text", async (status, verdict) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord({ stt_status: status })));
+    const body = payload(await call("oral_argument_transcript", { audio_id: 106247 }));
+    expect(body.stt_status).toBe(status);
+    expect(body.stt_verdict).toBe(verdict);
+    expect(body.transcript_usable).toBe(false);
+    expect(body.text).toBeNull();
+    expect(String(body.warning)).toContain("No usable transcript");
+    expect(String(body.stt_meaning).length).toBeGreaterThan(0);
+  });
+
+  it("stt_status 1 is the ONLY value that yields text", async () => {
+    for (const status of [0, 1, 2, 3, 4, 5]) {
+      clearClCache();
+      fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord({ stt_status: status })));
+      const body = payload(await call("oral_argument_transcript", { audio_id: 106247 }));
+      expect(typeof body.text === "string", `stt_status ${status}`).toBe(status === 1);
+    }
+  });
+
+  // Audio 106047 live: stt_status 3, 9,450 characters that are the case caption
+  // repeated over and over. It must not be handed back as a record.
+  it("withholds a status-3 transcript while still saying the text exists", async () => {
+    // A sentinel that exists ONLY in the transcript. The first version of this
+    // test asserted the payload did not contain "Beaverdam" — a word from the
+    // real record's transcript — and it passed for the wrong reason: live,
+    // audio 106047's case_name is "Beaverdam Creek Holdings, LLC v.
+    // Commissioner of Internal Revenue", so the word is legitimately in the
+    // metadata and the assertion was measuring the fixture, not the behavior.
+    const SENTINEL = "ZZ-TRANSCRIPT-ONLY-MARKER-ZZ";
+    const caption = `25-12624 ${SENTINEL} v. Commissioner of Internal Revenue `.repeat(20);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(audioRecord({ id: 106047, stt_status: 3, stt_transcript: caption })),
+    );
+    const body = payload(await call("oral_argument_transcript", { audio_id: 106047 }));
+
+    expect(body.stt_verdict).toBe("TRANSCRIPTION_DOES_NOT_MATCH_AUDIO");
+    expect(body.text).toBeNull();
+    // The length is still reported, so "nothing was transcribed" and "there is
+    // text and CourtListener disowns it" do not read the same.
+    expect(body.transcript_chars).toBe(caption.length);
+    expect(String(body.warning)).toContain("withheld");
+    expect(String(body.warning)).toContain(".mp3"); // pointed at the audio instead
+    expect(JSON.stringify(body)).not.toContain(SENTINEL);
+  });
+
+  it("never guesses on an stt_status the enum does not carry", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord({ stt_status: 9 })));
+    const unknown = payload(await call("oral_argument_transcript", { audio_id: 106247 }));
+    expect(unknown.stt_verdict).toBe("STATUS_9");
+    expect(unknown.transcript_usable).toBe(false);
+    expect(unknown.text).toBeNull();
+
+    clearClCache();
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord({ stt_status: null })));
+    const missing = payload(await call("oral_argument_transcript", { audio_id: 106247 }));
+    expect(missing.stt_verdict).toBe("STATUS_UNKNOWN");
+    expect(missing.text).toBeNull();
+  });
+
+  it.each([0, -5, 1.5, "abc"])("rejects audio_id %s before any network call", async (audio_id) => {
+    const res: any = await call("oral_argument_transcript", { audio_id });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/audio_id/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative or fractional offset before any network call", async () => {
+    for (const offset of [-1, 2.5]) {
+      const res: any = await call("oral_argument_transcript", { audio_id: 5, offset });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/offset/i);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("says so when an offset runs past the end instead of returning a silent empty page", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord()));
+    const res: any = await call("oral_argument_transcript", { audio_id: 106247, offset: 500 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("past the end");
+    expect(res.content[0].text).toContain("10 characters");
+  });
+});
+
+describe("oral_arguments transcript availability", () => {
+  const OA_PAGE = {
+    count: 18,
+    next: null,
+    results: [
+      { caseName: "A", court_id: "scotus", id: 111, duration: 100, snippet: "we will hear argument" },
+      { caseName: "B", court_id: "scotus", id: 222, duration: 200, snippet: "" },
+    ],
+  };
+
+  it("reads NOT_CHECKED by default, and costs no extra request", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(OA_PAGE));
+    const body = payload(await call("oral_arguments", { q: "miranda" }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body.results.map((r: any) => r.transcript_status)).toEqual(["NOT_CHECKED", "NOT_CHECKED"]);
+    expect(String(body.note)).toContain("NOT_CHECKED");
+    expect(String(body.note)).toContain("oral_argument_transcript");
+    expect(body.query.include_transcript_status).toBe(false);
+  });
+
+  it("names the snippet's provenance in the payload, not only in the README", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(OA_PAGE));
+    const body = payload(await call("oral_arguments", { q: "miranda" }));
+    expect(String(body.note)).toMatch(/machine-generated whisper/i);
+    expect(String(body.note)).toMatch(/not a certified transcript/i);
+  });
+
+  it("looks the real status up per row when asked, with the narrow fields read", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(OA_PAGE));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 111, stt_status: 1 }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 222, stt_status: 3 }));
+
+    const body = payload(await call("oral_arguments", { q: "miranda", include_transcript_status: true }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(3); // one per row, as documented
+    const audioCall = fetchMock.mock.calls[1][0] as URL;
+    expect(audioCall.pathname).toBe("/api/rest/v4/audio/111/");
+    expect(audioCall.searchParams.get("fields")).toBe("id,stt_status");
+    expect(body.results.map((r: any) => r.transcript_status)).toEqual([
+      "COMPLETE",
+      "TRANSCRIPTION_DOES_NOT_MATCH_AUDIO",
+    ]);
+  });
+
+  it("a failed status check reads CHECK_FAILED, never an assertion that no transcript exists", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(OA_PAGE));
+    fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail: "Not found." }), { ok: false, status: 404 }));
+
+    const body = payload(await call("oral_arguments", { q: "miranda", include_transcript_status: true }));
+
+    // The search itself still answers; a status check is an extra, not a gate.
+    expect(body.returned).toBe(2);
+    expect(body.results.map((r: any) => r.transcript_status)).toEqual(["CHECK_FAILED", "CHECK_FAILED"]);
+    expect(String(body.note)).toContain("CHECK_FAILED");
+    expect(String(body.note)).toContain("never that no transcript exists");
   });
 });
 

@@ -97,6 +97,17 @@ const MAX_COURT_PAGES = 200;
 /** Cap on opinion full-text length returned by case_detail (chars). */
 const TEXT_CAP = 50000;
 /**
+ * Oral-argument transcripts are long enough that they cannot ride a search
+ * result. Measured live 2026-09-14: a 6,385-second SCOTUS argument (audio
+ * 104586) is 101,707 characters of transcript; a 1,051-second circuit argument
+ * (audio 106247) is 13,974. So oral_argument_transcript pages: `max_chars`
+ * defaults to TRANSCRIPT_DEFAULT_CHARS, is capped at TRANSCRIPT_MAX_CHARS, and
+ * a truncated page reports `truncated: true` with the `next_offset` to resume
+ * from.
+ */
+const TRANSCRIPT_DEFAULT_CHARS = 15_000;
+const TRANSCRIPT_MAX_CHARS = 50_000;
+/**
  * Server-side cap on citation-lookup input text (chars): the request serializer
  * validates `text` at max_length 64,000 (CourtListener source,
  * cl/citations/api_serializers.py). citation_lookup enforces it pre-flight with
@@ -619,8 +630,85 @@ function normalizeOralArgumentHit(r: Row): Record<string, unknown> {
     audio_id: num(r.id),
     docket_id: num(r.docket_id),
     download_url: str(r.download_url),
+    // For type=oa the indexed text IS the Whisper transcript, so this excerpt is
+    // machine speech-to-text, not a certified transcript. Live 2026-09-14 it is
+    // byte-identical to the opening of the record's stt_transcript.
     snippet: str(r.snippet),
+    // Filled in only when the caller asks (see oral_arguments): the search index
+    // does not carry stt_status, and /audio/ has no batch id filter.
+    transcript_status: "NOT_CHECKED",
     absolute_url: fullUrl(r.absolute_url),
+  };
+}
+
+/**
+ * Normalize an /audio/{id}/ record into a transcript page.
+ *
+ * Refuses to hand back text unless stt_status says the transcription completed.
+ * `transcript_chars` reports the length that is ON THE RECORD even when the text
+ * is withheld, so a caller can tell "nothing was transcribed" from "there is
+ * text and it is disowned."
+ */
+function normalizeTranscript(
+  a: Row,
+  audioId: number,
+  offset: number,
+  maxChars: number,
+): Record<string, unknown> {
+  const status = num(a.stt_status);
+  const meaning = sttVerdict(status);
+  // Not str(): trimming would shift every offset away from what a live
+  // /audio/<id>/ read returns.
+  const full = typeof a.stt_transcript === "string" ? a.stt_transcript : "";
+  const sourceCode = num(a.stt_source);
+
+  const base = {
+    audio_id: audioId,
+    case_name: str(a.case_name) ?? str(a.case_name_full),
+    judges: str(a.judges),
+    duration_seconds: num(a.duration),
+    docket_url: str(a.docket),
+    download_url: str(a.download_url),
+    absolute_url: fullUrl(a.absolute_url),
+    stt_status: status,
+    stt_verdict: meaning.verdict,
+    stt_meaning: meaning.meaning,
+    stt_source: sourceCode == null ? null : STT_SOURCES[sourceCode] ?? `STT_SOURCE_${sourceCode}`,
+    machine_generated: true,
+    provenance: TRANSCRIPT_PROVENANCE,
+    transcript_chars: full.length,
+  };
+
+  if (!meaning.usable || full === "") {
+    return {
+      ...base,
+      transcript_usable: false,
+      offset,
+      returned_chars: 0,
+      truncated: false,
+      next_offset: null,
+      text: null,
+      warning:
+        `No usable transcript is returned for audio ${audioId}. ${meaning.meaning}` +
+        (full.length > 0
+          ? ` The record does carry ${full.length} characters of text, withheld here rather than passed off as a transcript.`
+          : "") +
+        (base.download_url ? ` The audio itself is at ${base.download_url}.` : ""),
+    };
+  }
+
+  const page = full.slice(offset, offset + maxChars);
+  const end = offset + page.length;
+  const truncated = end < full.length;
+  return {
+    ...base,
+    transcript_usable: true,
+    offset,
+    returned_chars: page.length,
+    truncated,
+    next_offset: truncated ? end : null,
+    max_chars: maxChars,
+    text: page,
   };
 }
 
@@ -645,6 +733,89 @@ function normalizeDocketEntry(r: Row): Record<string, unknown> {
     })),
   };
 }
+
+// CourtListener's speech-to-text state for an oral-argument recording. This is
+// an ENUM, not a flag, and its failure values are not rare: of 103,278 audio
+// records on 2026-09-14, 708 are status 3, 154 are 4, 77 are 5, 46 are 2 and
+// 16 are 0 (counted live, one /audio/?stt_status=N&count=on per value).
+//
+// Names and numbers from the vendor source, cl/audio/models.py:
+//   0 STT_NEEDED  "Speech to Text Needed"
+//   1 STT_COMPLETE  "Speech to Text Complete"
+//   2 STT_FAILED  "Speech to Text Failed"
+//   3 STT_HALLUCINATION  "Transcription does not match audio"
+//   4 STT_FILE_TOO_BIG  "File size is bigger than 25 MB"
+//   5 STT_NO_FILE  "File does not exist"
+//
+// Status 3 still carries text, and the text is worse than useless: audio 106047
+// holds 9,450 characters that are the case caption repeated over and over.
+// A status-3 record is never presented as a transcript.
+const STT_VERDICTS: Record<number, { verdict: string; usable: boolean; meaning: string }> = {
+  0: {
+    verdict: "TRANSCRIPTION_NEEDED",
+    usable: false,
+    meaning: "CourtListener has not transcribed this recording yet (stt_status 0, Speech to Text Needed).",
+  },
+  1: {
+    verdict: "COMPLETE",
+    usable: true,
+    meaning: "CourtListener's Whisper transcription of this recording completed (stt_status 1).",
+  },
+  2: {
+    verdict: "TRANSCRIPTION_FAILED",
+    usable: false,
+    meaning: "Transcription was attempted and failed (stt_status 2, Speech to Text Failed).",
+  },
+  3: {
+    verdict: "TRANSCRIPTION_DOES_NOT_MATCH_AUDIO",
+    usable: false,
+    meaning:
+      "CourtListener flagged this transcript as not matching the audio (stt_status 3, a Whisper " +
+      "hallucination). Text exists on the record and is withheld here: in the case measured, it was " +
+      "the case caption repeated for thousands of characters. Listen to the audio instead.",
+  },
+  4: {
+    verdict: "AUDIO_FILE_TOO_BIG",
+    usable: false,
+    meaning: "The recording is over the 25 MB transcription limit, so it was never transcribed (stt_status 4).",
+  },
+  5: {
+    verdict: "AUDIO_FILE_MISSING",
+    usable: false,
+    meaning: "CourtListener has no audio file for this record, so there is nothing to transcribe (stt_status 5).",
+  },
+};
+
+/** The verdict for an stt_status, never guessing on a value the enum does not carry. */
+function sttVerdict(status: number | null): { verdict: string; usable: boolean; meaning: string } {
+  if (status == null) {
+    return {
+      verdict: "STATUS_UNKNOWN",
+      usable: false,
+      meaning: "This record carried no stt_status, so nothing is claimed about its transcript.",
+    };
+  }
+  return (
+    STT_VERDICTS[status] ?? {
+      verdict: `STATUS_${status}`,
+      usable: false,
+      meaning: `CourtListener reported stt_status ${status}, which this server does not recognize. Treated as unusable.`,
+    }
+  );
+}
+
+// stt_source, same vendor source: 1 = OpenAI API's whisper-1 model,
+// 2 = self-hosted Whisper model.
+const STT_SOURCES: Record<number, string> = {
+  1: "OpenAI API whisper-1",
+  2: "self-hosted Whisper",
+};
+
+/** Every transcript here is machine speech-to-text. Say so in the payload, every time. */
+const TRANSCRIPT_PROVENANCE =
+  "Machine-generated Whisper speech-to-text produced by CourtListener. This is NOT a court " +
+  "reporter's certified transcript and is not part of the record: it mishears names, numbers and " +
+  "citations, and it carries no speaker attribution. Quote from the audio, not from this text.";
 
 /** Normalize one /opinions-cited/ record, defensively (auth-only endpoint). */
 function normalizeCitedPair(r: Row): Record<string, unknown> {
@@ -1010,11 +1181,21 @@ const TOOLS: Tool[] = [
     description:
       "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue " +
       "date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an " +
-      "issue was actually argued. Works without a token.",
+      "issue was actually argued. Works without a token. The `snippet` on each hit is an excerpt " +
+      "of a machine-generated Whisper transcript, not a certified one; for the transcript text " +
+      "itself pass a hit's audio_id to oral_argument_transcript.",
     inputSchema: {
       type: "object",
       properties: {
         q: { type: "string", description: "Search query (case name, party, or topic)." },
+        include_transcript_status: {
+          type: "boolean",
+          description:
+            "Report each result's real transcript status (default false). Costs ONE extra API " +
+            "request PER RESULT: the search index does not carry stt_status and /audio/ has no " +
+            "batch id filter (id__in is rejected as an unknown parameter). Left off, every row " +
+            'reads transcript_status "NOT_CHECKED". Lower `limit` before turning this on.',
+        },
         court: { type: "string", description: 'Optional court id filter (e.g. "scotus", "ca2"). Get ids from court_list.' },
         order_by: { type: "string", enum: ["relevance", "newest", "oldest"], description: "Sort order (default relevance; newest/oldest sort by argue date)." },
         argued_after: { type: "string", description: "Optional ISO date (YYYY-MM-DD); only arguments on/after." },
@@ -1040,6 +1221,41 @@ const TOOLS: Tool[] = [
         limit: { type: "integer", description: `Max people to return (1-${MAX_RESULTS}, default 10).` },
       },
       // Requires at least one of name_last / name_first (enforced in the handler).
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oral_argument_transcript",
+    description:
+      "The text of an oral argument, from CourtListener's Whisper transcript of the recording " +
+      "(/audio/{id}/). Pass an audio_id from oral_arguments. Works without a token. " +
+      "READ THIS BEFORE QUOTING: the text is MACHINE speech-to-text, never a court reporter's " +
+      "certified transcript — it mishears names, numbers and citations and carries no speaker " +
+      "attribution. CourtListener's own status for the transcription is reported as stt_verdict, " +
+      "and only a COMPLETE one returns text: a recording flagged " +
+      "TRANSCRIPTION_DOES_NOT_MATCH_AUDIO (a Whisper hallucination — 708 of 103,278 records on " +
+      "2026-09-14) has text on the record and it is withheld here rather than presented as a " +
+      `transcript. Long arguments run past 100,000 characters, so text is paged: up to ` +
+      `${TRANSCRIPT_MAX_CHARS} characters per call (default ${TRANSCRIPT_DEFAULT_CHARS}), with ` +
+      "truncated and next_offset when there is more.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        audio_id: {
+          type: "integer",
+          description: "Numeric audio id, from an oral_arguments hit's audio_id.",
+        },
+        offset: {
+          type: "integer",
+          description:
+            "Character offset to start from (default 0). Pass a previous response's next_offset to continue.",
+        },
+        max_chars: {
+          type: "integer",
+          description: `Characters to return (1-${TRANSCRIPT_MAX_CHARS}, default ${TRANSCRIPT_DEFAULT_CHARS}).`,
+        },
+      },
+      required: ["audio_id"],
       additionalProperties: false,
     },
   },
@@ -1447,13 +1663,91 @@ async function oralArguments(args: Row): Promise<unknown> {
     cursor: cursor ?? undefined,
   });
   const results = extractResults(json, "oral_arguments (/search/?type=oa)").slice(0, limit).map(normalizeOralArgumentHit);
+
+  // Transcript availability is NOT in the search index, and /audio/ has no
+  // batch id filter — id__in is rejected ("Unknown filter parameters are not
+  // allowed", verified live 2026-09-14; the vendor's AudioFilter gives `id` the
+  // INTEGER_LOOKUPS set, which has no `in`). So the real status costs one
+  // request per row, which is why it is opt-in: a 20-row page would be 20 extra
+  // requests, and a new CourtListener account is limited to 5 per minute.
+  const includeStatus = args.include_transcript_status === true;
+  let checkFailures = 0;
+  if (includeStatus) {
+    for (const row of results) {
+      const audioId = row.audio_id;
+      if (typeof audioId !== "number") {
+        row.transcript_status = "UNKNOWN_AUDIO_ID";
+        continue;
+      }
+      try {
+        // The narrowest possible read; `fields` is honoured on this endpoint.
+        const a = await clGet(`/audio/${audioId}/`, { fields: "id,stt_status" });
+        row.transcript_status = sttVerdict(num((a as Row).stt_status)).verdict;
+      } catch {
+        // Never turn a failed check into an assertion of absence.
+        row.transcript_status = "CHECK_FAILED";
+        checkFailures++;
+      }
+    }
+  }
+
+  const notes = [
+    "snippet is an excerpt of a MACHINE-generated Whisper transcript, not a certified transcript. " +
+      "For the transcript text, pass a row's audio_id to oral_argument_transcript.",
+  ];
+  if (!includeStatus) {
+    notes.push(
+      'transcript_status reads "NOT_CHECKED" on every row: the search index does not carry it. ' +
+        "Pass include_transcript_status to look it up (one extra request per row).",
+    );
+  } else if (checkFailures > 0) {
+    notes.push(
+      `${checkFailures} transcript status check(s) failed and read "CHECK_FAILED" — that means not ` +
+        "looked up, never that no transcript exists.",
+    );
+  }
+
   return {
-    query: { q, court: court ?? null, argued_after: arguedAfter ?? null, argued_before: arguedBefore ?? null, cursor: cursor ?? null },
+    query: {
+      q,
+      court: court ?? null,
+      argued_after: arguedAfter ?? null,
+      argued_before: arguedBefore ?? null,
+      include_transcript_status: includeStatus,
+      cursor: cursor ?? null,
+    },
     total_matches: num((json as Row).count),
     returned: results.length,
     next_cursor: extractCursor((json as Row).next),
+    note: notes.join(" "),
     results,
   };
+}
+
+async function oralArgumentTranscript(args: Row): Promise<unknown> {
+  const audioId = num(args.audio_id);
+  if (audioId == null || !Number.isInteger(audioId) || audioId <= 0) {
+    throw new Error("audio_id is required (a positive numeric audio id from an oral_arguments hit).");
+  }
+  const rawOffset = args.offset === undefined || args.offset === null ? 0 : num(args.offset);
+  if (rawOffset == null || !Number.isInteger(rawOffset) || rawOffset < 0) {
+    throw new Error(`offset must be a non-negative integer; got: ${JSON.stringify(args.offset)}`);
+  }
+  const maxChars = clampLimit(args.max_chars, TRANSCRIPT_DEFAULT_CHARS, TRANSCRIPT_MAX_CHARS);
+
+  // /audio/{id}/ answers unauthenticated (verified live 2026-09-14); the token
+  // is attached opportunistically, for the higher rate limit only.
+  const a = (await clGet(`/audio/${audioId}/`)) as Row;
+
+  const full = typeof a.stt_transcript === "string" ? a.stt_transcript : "";
+  if (rawOffset > full.length) {
+    throw new Error(
+      `offset ${rawOffset} is past the end of this transcript (${full.length} characters). ` +
+        "Page with the next_offset a previous call returned; a null next_offset means there is no more.",
+    );
+  }
+
+  return normalizeTranscript(a, audioId, rawOffset, maxChars);
 }
 
 const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
@@ -1467,6 +1761,7 @@ const HANDLERS: Record<string, (args: Row) => Promise<unknown>> = {
   case_authorities: caseAuthorities,
   docket_entries: docketEntries,
   oral_arguments: oralArguments,
+  oral_argument_transcript: oralArgumentTranscript,
 };
 
 // ---------------------------------------------------------------------------
