@@ -1040,6 +1040,30 @@ function stripDanglingEscape(q: string): string {
 }
 
 /**
+ * Clean an outgoing free-text query, and refuse one that cleans away to nothing.
+ *
+ * stripDanglingEscape can empty a query made only of dangling escapes, and
+ * clGet omits an empty parameter — so the search would leave with no `q` at
+ * all. Live 2026-09-14: /search/?type=o with no q answers HTTP 200 with count
+ * 8,310,312, every opinion in the database, which the payload then reports as
+ * total_matches for the caller's query. That is the confusion docket_number is
+ * already refused for one argument over, pointing the other way: there an
+ * argument that sanitized away read as "no such docket", here as eight million
+ * matches.
+ */
+function cleanQuery(raw: string, label: string): string {
+  const cleaned = stripDanglingEscape(raw).trim();
+  if (!cleaned) {
+    throw new Error(
+      `${label} ${JSON.stringify(raw)} is only escape characters; nothing is left to search for after ` +
+        "dropping them. An empty query matches every record in CourtListener, so it is an error rather " +
+        "than a result set.",
+    );
+  }
+  return cleaned;
+}
+
+/**
  * Look up an allow-listed option, without Object.prototype answering for it.
  *
  * The option tables here are plain object literals, so they inherit
@@ -1368,7 +1392,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
   const json = await clGet(
     "/search/",
     {
-      q: stripDanglingEscape(q),
+      q: cleanQuery(q, "q"),
       type: SEARCH_TYPE_OPINION,
       court: court ?? undefined,
       filed_after: filedAfter,
@@ -1440,7 +1464,7 @@ async function docketLookup(args: Row): Promise<unknown> {
   // also escape the space before the fielded operator rather than end a value.
   // `fielded` cannot end in a backslash — they are stripped above — so cleaning
   // the free-text half is enough to keep the joined query from ending in one.
-  const freeText = q ? stripDanglingEscape(q) : null;
+  const freeText = q ? cleanQuery(q, "q") : null;
   const effectiveQ = [freeText, fielded].filter(Boolean).join(" ").trim();
 
   const source = "docket_lookup (/search/?type=r)";
@@ -1786,7 +1810,7 @@ async function oralArguments(args: Row): Promise<unknown> {
   const json = await clGet(
     "/search/",
     {
-      q: stripDanglingEscape(q),
+      q: cleanQuery(q, "q"),
       type: SEARCH_TYPE_ORAL_ARGUMENT,
       court: court ?? undefined,
       order_by: orderValue,

@@ -1182,6 +1182,28 @@ describe("free-text q never leaves with a dangling escape", () => {
     // Without the clean, the backslash escapes the separating space instead.
     expect(lastUrl().searchParams.get("q")).toBe('eviction docketNumber:"1:20-cv-03590"');
   });
+
+  // The clean's own edge: a q made only of dangling escapes empties, clGet
+  // omits an empty param, and /search/?type=o with no q is HTTP 200 count
+  // 8,310,312 — every opinion in the database, reported as matches for the
+  // caller's query (verified live 2026-09-14).
+  it.each([
+    ["opinion_search", { q: "\\" }],
+    ["docket_lookup", { q: "\\" }],
+    ["oral_arguments", { q: "\\" }],
+  ])("refuses a %s query that cleans away to nothing, which would search everything", async (tool, args) => {
+    const res: any = await call(tool, args);
+    expect(res.isError, `${tool} sent an empty q`).toBe(true);
+    expect(res.content[0].text).toMatch(/nothing is left to search for/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a docket_lookup free-text q that empties even when a docket_number would carry it", async () => {
+    const res: any = await call("docket_lookup", { q: "\\", docket_number: "1:20-cv-03590" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/nothing is left to search for/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 // An /audio/{id}/ record, field names as the live API serves them
