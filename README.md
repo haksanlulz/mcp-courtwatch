@@ -118,7 +118,9 @@ setx COURTLISTENER_API_TOKEN your-token-here      # Windows (new shells)
 
 Without the token, `opinion_search`, `docket_lookup`, `court_list`, `judge_lookup`, `cited_by`, `oral_arguments`, and `oral_argument_transcript` still work at CourtListener's unauthenticated rate limit. The token-gated tools return a clear error telling you to set the token. The token is never logged.
 
-**New-account rate limit:** fresh CourtListener accounts are throttled at 5 requests/minute (it rises as the account ages). Until then, set `COURTWATCH_THROTTLE_MS=15000` in the server's env to pace requests under that limit — the default spacing is 200ms.
+**New-account rate limit, and it has two parts.** Fresh CourtListener accounts are throttled at 5 requests/minute (it rises as the account ages); set `COURTWATCH_THROTTLE_MS=15000` in the server's env to pace under that — the default spacing is 200ms.
+
+Pacing does not buy you the second part. There is also a fixed **hourly** ceiling, which the per-minute spacing cannot help with: `HTTP 429 ... Rate limit exceeded: 50/hour`, observed live on this repo's own token on 2026-09-14 while correctly paced at 15000ms. `npm run smoke` makes twelve requests — eleven checks, plus one to resolve a docket id — and a check that draws a 429 retries twice more, so a single run can spend a meaningful share of the hour's budget and a second run inside the same hour reports FAIL on whatever the ceiling refuses. The 429 body names the seconds remaining. There is no workaround but waiting it out, or an account old enough to have a higher limit.
 
 ## Example
 
