@@ -870,11 +870,8 @@ describe("cited_by", () => {
     expect(String(body.note)).toContain("treatment");
   });
 
-  it("rejects a non-integer opinion id before any network call", async () => {
-    const res = await call("cited_by", { opinion_id: "not-a-number" });
-    expect((res as any).isError).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+  // Bad opinion_id values are covered for every id-taking tool at once, in
+  // "positive-integer id validation" below.
 });
 
 describe("case_authorities", () => {
@@ -1611,14 +1608,39 @@ describe("an unsubstituted user_config placeholder is not a token", () => {
   });
 });
 
-describe("case_detail id validation", () => {
-  // The id is interpolated into the request path; the three sibling id-taking
-  // tools already reject a negative or fractional one pre-flight.
-  it.each([-5, 1.5, 0])("rejects id %s before any network call", async (id) => {
-    const res: any = await call("case_detail", { id });
-    expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/positive/i);
-    expect(fetchMock).not.toHaveBeenCalled();
+describe("positive-integer id validation", () => {
+  // Four tools interpolate a caller-supplied id into the request path or a
+  // fielded operator, and all four run the same guard (== null ||
+  // !Number.isInteger(x) || x <= 0). Only two of them were tested, and
+  // cited_by's one case passed a STRING, which num() rejects before the
+  // integer branch is ever reached — so dropping `<= 0` or the isInteger check
+  // from cited_by, case_authorities or docket_entries would have shipped with
+  // the suite green. The table is the population: every id-taking tool, every
+  // way the guard can be wrong.
+  const ID_TOOLS: Array<[string, string]> = [
+    ["case_detail", "id"],
+    ["cited_by", "opinion_id"],
+    ["case_authorities", "opinion_id"],
+    ["docket_entries", "docket_id"],
+  ];
+
+  it.each(ID_TOOLS)("%s rejects a bad %s before any network call", async (tool, field) => {
+    for (const bad of [-5, 1.5, 0, "not-a-number", null, undefined]) {
+      fetchMock.mockClear();
+      const res: any = await call(tool, { [field]: bad });
+      expect(res.isError, `${tool} accepted ${field}=${JSON.stringify(bad)}`).toBe(true);
+      expect(res.content[0].text, `${tool} ${field}=${JSON.stringify(bad)}`).toMatch(/positive/i);
+      expect(fetchMock, `${tool} sent a request for ${field}=${JSON.stringify(bad)}`).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(ID_TOOLS)("%s accepts a valid %s", async (tool, field) => {
+    fetchMock.mockResolvedValue(jsonResponse({ count: 0, next: null, results: [] }));
+    const res: any = await call(tool, { [field]: 5 });
+    // case_detail reads a detail endpoint, so an empty envelope is a thin but
+    // valid record; what matters here is that the guard let it through.
+    expect(res.isError, `${tool} rejected a valid ${field}`).toBeFalsy();
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 
