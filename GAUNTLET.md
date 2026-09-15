@@ -47,6 +47,7 @@ One of four near-identical civic servers converted together on 2026-07-29 (`mcp-
 | A 429 that names its own wait is not retried past it | vitest: *"does NOT retry a 429 that names a wait longer than the retry window (%s)"* (4 cases) + *"still retries a 429 whose stated wait fits inside the backoff window"* | ✅ **corrected fix round 2, mutation-probed red.** Round 1 compared the stated wait against `RETRY_DEADLINE_MS` (40s), which is not a window a retry can land in — it only bounds how late an attempt may START. Retries fire after `RETRY_BACKOFF_MS`, so with the shipped `[500, 2000]` the last attempt begins about 2.5s in, and every stated wait between ~3s and 40s still bought two requests certain to fail. That is the common band: a new account is on 5 requests/minute, and DRF's message for that throttle names a wait of up to 60 seconds. `RETRY_WINDOW_MS` now walks the same backoffs and the same deadline test the loop does, so the two cannot drift. Restoring the deadline constant turns the 30s and 3s cases red and leaves the 13-hour and 40-minute ones green — those exceeded 40s too, which is why round 1's tests could not see the bug. |
 | An offset the caller gets back indexes the text the caller gave | vitest: *"the offsets it returns land on the citation in the caller's own text"* + *"strips the leading run itself, so the server has nothing left to shift"* + *"re-anchors correctly past ..."* (3 cases) | ✅ **corrected fix round 2, mutation-probed red.** Round 1 changed what was POSTed and moved nothing: `text` is a DRF `CharField`, whose `trim_whitespace` defaults to true (`rest_framework/fields.py` 729 / 762), and the extractor runs over the VALIDATED value (`cl/api/utils.py` `get_citation_count_from_request` → `view.citation_list` → `cl/citations/api_views.py` `citation.span()`), so every offset is an index into `text.strip()` whatever the client sends. The client now strips the leading run ITSELF and adds the count back, so the offset is known by construction; the class it strips is a superset of Python's, since JS `\s` misses `\x1c`-`\x1f` and `\x85`. The round-1 test mocked `text.indexOf(...)` on the untrimmed string — an index the live endpoint cannot emit — so it could not go red; the mocks now emit trimmed-text indexes. |
 | The 64,000-character cap is measured the way the serializer measures it | vitest: *"measures the cap the way the serializer does, not against the whitespace"* | ✅ **added fix round 2, mutation-probed red.** DRF's `Field.run_validation` calls `to_internal_value` (which strips) and only then `run_validators`, so `max_length=64_000` applies to the stripped value. Counting the untrimmed string refused a 64,000-character brief locally over a trailing newline upstream would have dropped before counting. |
+| A tool that hands back a cursor accepts one | vitest: *"accepts the cursor it hands back, and sends it upstream"* + *"says the table is partial, since the deferred count cannot"* + *"does not claim more pages when the table is complete"* + *"%s declares the cursor argument it hands back"* (6 tools) | ✅ **added fix round 2, mutation-probed red.** `case_authorities` published `next_cursor` from a cursor-paginated endpoint (`OpinionsCitedViewSet`, `ordering = "-id"`) while its `inputSchema` declared only `opinion_id` and `limit` under `additionalProperties: false`, and `/opinions-cited/` defers its `count`, so a truncated table of authorities was indistinguishable from a complete one AND had no way to continue. The `tools/list` half exists because deleting `cursor` from the SCHEMA left every other test green — the schema is what a model reads, and nothing was asserting it; its population is "publishes a cursor", not a hand-list, so `judge_lookup` is excluded by exposing none. |
 | One hung request cannot wedge later calls | `AbortSignal.timeout(15_000)` on every fetch | ✅ present (assertion via the header test) |
 | Every request identifies itself to CourtListener | vitest asserts `User-Agent` matches `^mcp-courtwatch/\d` | ✅ **added 2026-07-29, mutation-probed red** |
 | Token never enters the query string | vitest asserts header-only auth | ✅ present |
@@ -144,6 +145,58 @@ Every fix in this round was mutation-probed before being recorded here. Gates af
 **Docs.** The flagship `opinion_search` example was captured before `dropped_from_this_page` and the drop `note` existed, so the one block a reader copies to learn the response shape showed a payload the shipped code cannot produce — at `limit: 1` against the 20-row page it is called on, with 19 rows dropped and unreported. Every figure in it was re-verified live while fixing it (count 282, 20 rows, Monell, cite count 42,979, same cursor). The rate-limit section said the limit "has two parts" and there are three.
 
 Every fix in this round was mutation-probed before being recorded here; the probes are enumerated in the README's Testing section. Gates after: `npm test` **200 passed / 0 failed**, typecheck clean. The live `npm run smoke` was **NOT** re-run, and the reason was measured rather than assumed: one authenticated request answered `HTTP 429 {"detail":"Request was throttled. Rate limit exceeded: 125/day. Expected available in 46707 seconds."}`. So the 11/11 above is the last live measurement, and the rewritten `docket_entries` rung is so far proven only against the offline fault-injection. Re-run the live rung after the daily ceiling resets.
+
+### Fix round 2 — 2026-09-15
+
+Four findings, all four against fixes that had already been recorded as landed in round 1. The shared shape: each
+round-1 fix changed something real and none of them changed the thing the finding named, and each shipped a test that
+could not have caught the miss.
+
+**A fix that changed the bytes on the wire and not one offset.** `citation_lookup` was made to POST the caller's text
+untrimmed, on the premise that `start_index` / `end_index` are offsets into what is SENT. They are not. `text` is a
+DRF `CharField`, whose `trim_whitespace` defaults to true (`rest_framework/fields.py` 729 / 762), and the citation
+extractor runs over the **validated** value: `cl/api/utils.py`'s `get_citation_count_from_request` feeds
+`validated_data["text"]` to `eyecite.get_citations` and stashes the spans on `view.citation_list`, which
+`cl/citations/api_views.py` reads into the response via `citation.span()`. So every offset indexes `text.strip()`
+whatever the client sends. The client now strips the leading run itself and adds the count back, which makes the
+offset known by construction rather than inferred. ⚠️ **The round-1 test mocked `text.indexOf(...)` on the untrimmed
+string — an index the live endpoint cannot emit — so planting the real behaviour left it green.** A mock that emits
+what the API cannot is not a test of the API's contract; it is a test of the mock.
+
+**Permanence keyed on a string the vendor serves for two different things.** The *review your query* branch marked
+every 5xx carrying that detail as permanent. `cl/search/api_utils.py` raises `ElasticServerError` for a
+`TransportError`, a `ConnectionError` and a non-parse `ApiError` as well, via `raise error_to_raise()` with no
+argument, so all of them land on the same `default_detail` in `cl/search/exception.py`; a query the parser genuinely
+rejects is an `ElasticBadRequestError`, an HTTP 400, which was never retried anyway. The fix had therefore removed
+the retry from an Elasticsearch outage — the exact case retries exist for — and blamed the caller's quoting for it.
+Narrowed to the evidence the caller actually supplied: only a caller string can carry a parser metacharacter by
+accident, and `cited_by`'s `cites:(<validated integer>)` cannot, so that body there can only be the cluster. It moved
+out of the permanent table and gained the opposite assertion.
+
+**A threshold compared against a constant that is not the window.** The 429 stated-wait check used
+`RETRY_DEADLINE_MS` (40s), which bounds only how late an attempt may START. Retries fire after `RETRY_BACKOFF_MS`, so
+the last attempt begins about 2.5s in, and every wait between roughly 3 and 40 seconds still bought two certain
+failures — the band a new account's 5-per-minute throttle actually names. ⚠️ **Round 1's two cases could not detect
+this**: 13 hours and 40 minutes exceed both constants, so they pass either way. `RETRY_WINDOW_MS` now walks the same
+backoffs and the same deadline test the loop does.
+
+**A cursor published to a schema that could not accept it.** `case_authorities` returned `next_cursor` from a
+cursor-paginated endpoint (`OpinionsCitedViewSet`, `ordering = "-id"`) while its `inputSchema` declared only
+`opinion_id` and `limit`, under `additionalProperties: false`. With `count` deferred on that endpoint, the payload
+said `total_reported: false` and handed back a cursor with no argument to put it in — on the tool whose entire output
+is what an opinion relies on. **The probe found a second layer**: deleting `cursor` from the SCHEMA left the whole
+suite green, because the schema is what a model reads and nothing asserted it. `tools/list` is now checked for a
+declared `cursor` on every tool that pages, with the population derived from "publishes a cursor" rather than
+hand-listed.
+
+Every fix in this round was mutation-probed before being recorded here; the probes are enumerated in the README's
+Testing section. Gates after: `npm test` **217 passed / 0 failed**, typecheck clean.
+
+⚠️ **The live rung is still unproven, and the reason was measured rather than assumed.** One authenticated request at
+2026-09-15 00:35 answered `HTTP 429 {"detail":"Request was throttled. Rate limit exceeded: 125/day. Expected
+available in 44224 seconds."}` — about 12.3 hours. So `npm run smoke` has not run since the `docket_entries` rewrite
+in round 1, and none of round 2's changes has met the real API either. The ceiling is rolling, not a midnight reset:
+round 1 measured 46,707s remaining and round 2 measured 44,224s roughly a day later. Item 6 below still governs.
 
 ### Dependency advisories — 2026-09-14
 
