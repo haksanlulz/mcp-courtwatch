@@ -532,6 +532,34 @@ describe("opinion_search", () => {
     expect(res.isError).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  // ...but not when the 429 names a wait the retries cannot outlast. Live
+  // 2026-09-14 the daily ceiling answers "Rate limit exceeded: 125/day.
+  // Expected available in 48238 seconds" — 13.4 hours, against a 40s retry
+  // deadline, so the two extra requests were spent on a budget CourtListener
+  // had already said was gone.
+  it.each([
+    ["the daily ceiling", "Request was throttled. Rate limit exceeded: 125/day. Expected available in 48238 seconds."],
+    ["the hourly ceiling", "Request was throttled. Rate limit exceeded: 50/hour. Expected available in 2431 seconds."],
+  ])("does NOT retry a 429 that names a wait longer than the retry deadline (%s)", async (_label, detail) => {
+    fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail }), { ok: false, status: 429 }));
+    const res: any = await call("opinion_search", { q: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Rate limit exceeded");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a 429 whose stated wait fits inside the deadline", async () => {
+    fetchMock.mockResolvedValue(
+      textResponse(JSON.stringify({ detail: "Request was throttled. Expected available in 2 seconds." }), {
+        ok: false,
+        status: 429,
+      }),
+    );
+    const res: any = await call("opinion_search", { q: "x" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("docket_lookup", () => {
