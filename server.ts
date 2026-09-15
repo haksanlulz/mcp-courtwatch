@@ -1614,10 +1614,15 @@ async function opinionSearch(args: Row): Promise<unknown> {
   // Named once and handed to both: clGet validates the envelope before caching
   // it, and the result set is extracted here.
   const source = "opinion_search (/search/?type=o)";
+  // The evidence for a "review your query" 500 has to be the caller text that
+  // actually reached the parser, not the raw argument: cleanQuery removes a
+  // dangling escape, so a raw `q` ending in one names a metacharacter that was
+  // never sent, and the outage it really was loses its retries.
+  const cleanedQ = cleanQuery(q, "q");
   const json = await clGet(
     "/search/",
     {
-      q: cleanQuery(q, "q"),
+      q: cleanedQ,
       type: SEARCH_TYPE_OPINION,
       court: court ?? undefined,
       filed_after: filedAfter,
@@ -1625,7 +1630,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
       order_by,
       cursor: cursor ?? undefined,
     },
-    { expectResults: source, callerQuery: q },
+    { expectResults: source, callerQuery: cleanedQ },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeOpinionHit);
@@ -1704,9 +1709,14 @@ async function docketLookup(args: Row): Promise<unknown> {
       court: court ?? undefined,
       cursor: cursor ?? undefined,
     },
-    // Only the caller's halves. The docketNumber: operator fragment is composed
-    // here, so its ':' and '"' are not evidence of a caller typo.
-    { expectResults: source, callerQuery: [q, docketNumber].filter(Boolean).join(" ") || undefined },
+    // Only the caller's free text, and only after cleaning. The docket number
+    // is not evidence of anything: this server strips `"` and `\` from it and
+    // then wraps it as docketNumber:"...", so every character left in it sits
+    // inside a quoted phrase and is inert to the parser -- while almost every
+    // federal docket number carries a ':'. Keying on it marked an Elasticsearch
+    // outage permanent on the tool's main path and told the caller to go
+    // looking for a stray operator in a docket number they typed correctly.
+    { expectResults: source, callerQuery: freeText ?? undefined },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeDocketHit);
@@ -2130,10 +2140,11 @@ async function oralArguments(args: Row): Promise<unknown> {
   const cursor = str(args.cursor);
 
   const source = "oral_arguments (/search/?type=oa)";
+  const cleanedQ = cleanQuery(q, "q");
   const json = await clGet(
     "/search/",
     {
-      q: cleanQuery(q, "q"),
+      q: cleanedQ,
       type: SEARCH_TYPE_ORAL_ARGUMENT,
       court: court ?? undefined,
       order_by: orderValue,
@@ -2141,7 +2152,7 @@ async function oralArguments(args: Row): Promise<unknown> {
       argued_before: arguedBefore,
       cursor: cursor ?? undefined,
     },
-    { expectResults: source, callerQuery: q },
+    { expectResults: source, callerQuery: cleanedQ },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeOralArgumentHit);

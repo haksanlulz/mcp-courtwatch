@@ -1530,6 +1530,27 @@ describe("a query CourtListener cannot parse is refused once, not three times", 
     expect(text).toMatch(/unbalanced quote/i);
   });
 
+  it("a docket number keeps its attempts -- its ':' rides inside a quoted operator this server composed", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("docket_lookup", { docket_number: "1:20-cv-03590" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("a caller q that sanitizes clean keeps its attempts -- the escape never reached the parser", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("opinion_search", { q: "eviction\\" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("free text with a surviving metacharacter is still refused once, docket number or not", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("docket_lookup", { q: "eviction~~", docket_number: "1:20-cv-03590" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("a 503 carrying the same body is the same refusal", async () => {
     fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 503 }));
     const res: any = await call("opinion_search", { q: "eviction~~" });
