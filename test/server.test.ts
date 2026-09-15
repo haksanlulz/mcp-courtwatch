@@ -366,6 +366,23 @@ describe("tool registration", () => {
       expect(t.inputSchema.type).toBe("object");
     }
   });
+
+  // A tool that PUBLISHES next_cursor must DECLARE cursor, or the cursor is a
+  // dead end: the schema is what a model reads, and every schema here sets
+  // additionalProperties: false, so an undeclared argument is unsendable.
+  // case_authorities published one and declared none. judge_lookup is the
+  // deliberate exception — it exposes no cursor at all and says more_available
+  // instead — so the population is "the tools that page", not a hand-list.
+  it.each(["opinion_search", "docket_lookup", "cited_by", "oral_arguments", "docket_entries", "case_authorities"])(
+    "%s declares the cursor argument it hands back",
+    async (name) => {
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === name)!;
+      const props = tool.inputSchema.properties as Record<string, unknown>;
+      expect(Object.keys(props)).toContain("cursor");
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+    },
+  );
 });
 
 describe("opinion_search", () => {
@@ -1107,6 +1124,64 @@ describe("case_authorities", () => {
     expect((res as any).isError).toBe(true);
     expect((res as any).content[0].text).toContain("COURTLISTENER_API_TOKEN");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // /opinions-cited/ is cursor-paginated (vendor: OpinionsCitedViewSet carries
+  // "# Default cursor ordering key" / ordering = "-id"), so a table longer than
+  // `limit` comes back with a real next_cursor. This tool published that cursor
+  // and accepted no cursor argument, under additionalProperties: false — a dead
+  // end on the tool whose whole output is what an opinion relies on, and its
+  // `count` is deferred, so nothing else said the page was partial.
+  function truncatedPage() {
+    return jsonResponse({
+      count: "https://www.courtlistener.com/api/rest/v4/opinions-cited/?count=on&citing_opinion=2812209",
+      next: "https://www.courtlistener.com/api/rest/v4/opinions-cited/?citing_opinion=2812209&cursor=cD0xMjM%3D",
+      results: [
+        {
+          citing_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/2812209/",
+          cited_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/108713/",
+          depth: 7,
+        },
+      ],
+    });
+  }
+
+  it("accepts the cursor it hands back, and sends it upstream", async () => {
+    fetchMock.mockResolvedValueOnce(truncatedPage());
+    const first = payload(await call("case_authorities", { opinion_id: 2812209 }));
+    expect(first.next_cursor).toBe("cD0xMjM=");
+
+    fetchMock.mockResolvedValueOnce(truncatedPage());
+    const second = payload(await call("case_authorities", { opinion_id: 2812209, cursor: first.next_cursor }));
+    expect(lastUrl().searchParams.get("cursor")).toBe("cD0xMjM=");
+    expect(second.query.cursor).toBe("cD0xMjM=");
+  });
+
+  it("says the table is partial, since the deferred count cannot", async () => {
+    fetchMock.mockResolvedValueOnce(truncatedPage());
+    const body = payload(await call("case_authorities", { opinion_id: 2812209 }));
+    expect(body.total_authorities).toBeNull();
+    expect(String(body.note)).toMatch(/more authorities remain/i);
+    expect(String(body.note)).toMatch(/next_cursor/);
+  });
+
+  it("does not claim more pages when the table is complete", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        count: 1,
+        next: null,
+        results: [
+          {
+            citing_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/2812209/",
+            cited_opinion: "https://www.courtlistener.com/api/rest/v4/opinions/108713/",
+            depth: 1,
+          },
+        ],
+      }),
+    );
+    const body = payload(await call("case_authorities", { opinion_id: 2812209 }));
+    expect(body.next_cursor).toBeNull();
+    expect(String(body.note)).not.toMatch(/more authorities remain/i);
   });
 });
 

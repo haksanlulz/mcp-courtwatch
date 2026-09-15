@@ -1451,12 +1451,14 @@ const TOOLS: Tool[] = [
       "The reverse of cited_by: every authority a given opinion RELIES ON (its table of " +
       "authorities), with a depth count of how many times each is cited. Pass the citing opinion's " +
       "id. Requires COURTLISTENER_API_TOKEN (authentication-only endpoint). Returns cited opinion " +
-      "ids; fetch interesting ones with case_detail (type opinion) or their clusters.",
+      "ids; fetch interesting ones with case_detail (type opinion) or their clusters. A table longer " +
+      "than `limit` continues from the returned next_cursor.",
     inputSchema: {
       type: "object",
       properties: {
         opinion_id: { type: "integer", description: "Numeric OPINION id whose authorities to list." },
         limit: { type: "integer", description: `Max authorities to return (1-${MAX_RESULTS}, default ${MAX_RESULTS}).` },
+        cursor: { type: "string", description: "Opaque cursor from a previous response's next_cursor." },
       },
       required: ["opinion_id"],
       additionalProperties: false,
@@ -2003,18 +2005,28 @@ async function caseAuthorities(args: Row): Promise<unknown> {
     throw new Error("opinion_id is required (a positive numeric OPINION id).");
   }
   const limit = clampLimit(args.limit, MAX_RESULTS);
+  // /opinions-cited/ is cursor-paginated (vendor: OpinionsCitedViewSet carries
+  // "# Default cursor ordering key" / ordering = "-id"), and this handler
+  // published next_cursor while accepting no cursor — so a table of
+  // authorities longer than `limit` ended at a cursor the caller had nowhere to
+  // put, on a schema with additionalProperties: false. `count` is deferred on
+  // this endpoint, so total_authorities is normally null: without the cursor
+  // there was no signal at all separating a complete table from a truncated
+  // one, in the tool whose whole output is what an opinion relies on.
+  const cursor = str(args.cursor);
 
   // /opinions-cited/ answers 401 without a token (verified live 2026-08-23).
   const source = "case_authorities (/opinions-cited/)";
   const json = await clGet(
     "/opinions-cited/",
-    { citing_opinion: opinionId, page_size: limit },
+    { citing_opinion: opinionId, page_size: limit, cursor: cursor ?? undefined },
     { requireAuth: true, expectResults: source },
   );
   const results = extractResults(json, source).slice(0, limit).map(normalizeCitedPair);
   const totalAuthorities = num((json as Row).count);
+  const nextCursor = extractCursor((json as Row).next);
   return {
-    query: { opinion_id: opinionId },
+    query: { opinion_id: opinionId, cursor: cursor ?? null },
     // v4 cursor-paginated list endpoints do not OMIT `count` — they DEFER it:
     // the field arrives as a URL string pointing at the same query with
     // ?count=on, so num() of it is null. Verified live 2026-09-14 on
@@ -2027,8 +2039,13 @@ async function caseAuthorities(args: Row): Promise<unknown> {
     total_authorities: totalAuthorities,
     total_reported: totalAuthorities != null,
     returned: results.length,
-    next_cursor: extractCursor((json as Row).next),
-    note: "depth = how many times the opinion cites that authority. Fetch any authority with case_detail (type opinion).",
+    next_cursor: nextCursor,
+    note:
+      "depth = how many times the opinion cites that authority. Fetch any authority with case_detail (type opinion)." +
+      (nextCursor
+        ? " This is one page: more authorities remain — pass next_cursor back as cursor. total_authorities is null " +
+          "because /opinions-cited/ defers its count, so this page's size is not the table's size."
+        : ""),
     results,
   };
 }
