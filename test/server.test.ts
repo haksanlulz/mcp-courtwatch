@@ -904,35 +904,76 @@ describe("citation_lookup", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // start_index / end_index are offsets into the text that was SENT, and the
-  // caller uses them to find the cite in their own draft. The text was being
-  // trimmed on the way out, so a draft pasted with a leading newline or
-  // indentation got back indexes into a string it never had.
-  it("sends the caller's text byte-for-byte, so the returned offsets are offsets into it", async () => {
+  // start_index / end_index exist so the caller can find the cite in their own
+  // draft, and they arrive anchored to text.strip() no matter what this client
+  // POSTs: `text` is a DRF CharField whose trim_whitespace defaults to true
+  // (rest_framework/fields.py:729 / :762), and the extractor runs over the
+  // VALIDATED value (cl/api/utils.py -> view.citation_list ->
+  // cl/citations/api_views.py). Sending the text untrimmed moved nothing; the
+  // leading strip has to happen here, where the count can be kept and added
+  // back. These mocks therefore emit indexes into the TRIMMED text — the only
+  // ones the live endpoint can produce.
+  it("strips the leading run itself, so the server has nothing left to shift", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
     const text = "\n\n    See Roe v. Wade, 410 U.S. 113 (1973).   \n";
     await call("citation_lookup", { text });
-    expect(JSON.parse(lastInit().body!)).toEqual({ text });
+    const sent = JSON.parse(lastInit().body!).text as string;
+    expect(sent).toBe("See Roe v. Wade, 410 U.S. 113 (1973).   \n");
+    expect(sent).toBe(text.slice(text.length - sent.length));
   });
 
   it("the offsets it returns land on the citation in the caller's own text", async () => {
     const text = "\n   See Roe v. Wade, 410 U.S. 113 (1973).";
-    const start = text.indexOf("410 U.S. 113");
-    const end = start + "410 U.S. 113".length;
+    // What CourtListener actually returns: eyecite runs over the DRF-trimmed
+    // value, so the span is an offset into the trimmed text, not into `text`.
+    const serverStart = text.trimStart().indexOf("410 U.S. 113");
+    expect(serverStart).not.toBe(text.indexOf("410 U.S. 113")); // the whole bug, in one line
     fetchMock.mockResolvedValueOnce(
-      jsonResponse([{ ...CITATION_LOOKUP_MIXED[0], start_index: start, end_index: end }]),
+      jsonResponse([
+        {
+          ...CITATION_LOOKUP_MIXED[0],
+          start_index: serverStart,
+          end_index: serverStart + "410 U.S. 113".length,
+        },
+      ]),
     );
     const body = payload(await call("citation_lookup", { text }));
-    const sent = JSON.parse(lastInit().body!).text as string;
-    expect(sent.slice(body.results[0].start_index, body.results[0].end_index)).toBe("410 U.S. 113");
     expect(text.slice(body.results[0].start_index, body.results[0].end_index)).toBe("410 U.S. 113");
+  });
+
+  // Python strips five characters JS's \s does not match (\x1c-\x1f and \x85),
+  // and JS's \s matches one Python keeps (U+FEFF). Counting the leading run
+  // with a bare /^\s+/ would be wrong in both directions; the class used here
+  // is a superset of Python's, which is the safe side.
+  it.each([
+    ["a NEL the JS \\s class does not match", "\u0085\u0085 410 U.S. 113"],
+    ["a file separator", "\u001c 410 U.S. 113"],
+    ["a BOM, which Python's strip keeps", "\ufeff 410 U.S. 113"],
+  ])("re-anchors correctly past %s", async (_label, text) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    await call("citation_lookup", { text });
+    const sent = JSON.parse(lastInit().body!).text as string;
+    // Whatever was removed, the server can remove nothing more from the front.
+    expect(sent.replace(/^[\s\u001c-\u001f\u0085]+/, "")).toBe(sent);
+    expect(sent).toBe("410 U.S. 113");
   });
 
   it("counts the text it actually sends", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
     const text = "  410 U.S. 113  ";
     const body = payload(await call("citation_lookup", { text }));
-    expect(body.query.text_chars).toBe(text.length);
+    expect(body.query.text_chars).toBe("410 U.S. 113  ".length);
+  });
+
+  // DRF's Field.run_validation calls to_internal_value (which strips) and only
+  // then run_validators, so max_length=64_000 is applied to the stripped value.
+  // Measuring the untrimmed string refused a brief upstream would have taken.
+  it("measures the cap the way the serializer does, not against the whitespace", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const text = `\n  ${"x".repeat(64_000)}  \n`;
+    const res: any = await call("citation_lookup", { text });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse(lastInit().body!).text).toBe(`${"x".repeat(64_000)}  \n`);
   });
 
   it("errors clearly when the token is missing, without calling the API", async () => {

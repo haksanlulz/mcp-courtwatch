@@ -128,6 +128,22 @@ const TRANSCRIPT_MAX_CHARS = 50_000;
  */
 const CITATION_TEXT_CAP = 64_000;
 /**
+ * The leading / trailing runs that CourtListener's serializer removes before
+ * the citation extractor ever sees the text. `text` is a DRF CharField, whose
+ * trim_whitespace defaults to true, and CharField.to_internal_value ends
+ * `return value.strip()` (rest_framework/fields.py lines 729 and 762) — so the
+ * value eyecite scans, and therefore every offset it reports, belongs to
+ * text.strip(), not to what this client POSTs.
+ *
+ * These match a SUPERSET of Python's str.strip(): JS \s misses \x1c-\x1f and
+ * \x85, all five of which Python strips. The superset is the safe direction.
+ * Over-stripping only means this client removed a leading character itself and
+ * counted it; UNDER-stripping would leave one for the server to remove after
+ * the count, which is exactly the shift being fixed.
+ */
+const PY_STRIP_LEADING_RE = /^[\s\u001c-\u001f\u0085]+/;
+const PY_STRIP_TRAILING_RE = /[\s\u001c-\u001f\u0085]+$/;
+/**
  * Citations actually checked per citation-lookup call (CourtListener's
  * MAX_CITATIONS_PER_REQUEST, default 250; cl/settings/project/citations.py).
  * Citations past the cap are still returned, each flagged status 429
@@ -1118,8 +1134,22 @@ function normalizeCitationMatch(c: Row): Record<string, unknown> {
   };
 }
 
-/** Normalize one /citation-lookup/ item (one citation found in the text). */
-function normalizeCitationResult(r: Row): Record<string, unknown> {
+/**
+ * Normalize one /citation-lookup/ item (one citation found in the text).
+ *
+ * `indexOffset` re-anchors the API's offsets onto the caller's own string: see
+ * citationLookup for why they arrive anchored to a shorter one.
+ *
+ * NOTE for anyone tempted to assert text.slice(start, end) === citation here:
+ * it does not hold, and the mismatch is upstream-correct. eyecite's span() uses
+ * span_start / span_end when set, while matched_text() is str(self.token)
+ * (eyecite/models.py), and eyecite/find.py sets span_end past the token end for
+ * a short-form cite carrying a pin cite ("515 U.S., at 241"). The slice then
+ * STARTS WITH the citation and runs longer. CourtListener serves both
+ * FullCaseCitation and ShortCaseCitation (the annotation on
+ * CitationLookupViewSet.citation_list), so both shapes reach this function.
+ */
+function normalizeCitationResult(r: Row, indexOffset = 0): Record<string, unknown> {
   const status = num(r.status);
   const meaning =
     status != null
@@ -1135,8 +1165,8 @@ function normalizeCitationResult(r: Row): Record<string, unknown> {
     normalized_citations: Array.isArray(r.normalized_citations)
       ? (r.normalized_citations as unknown[]).map((x) => str(x)).filter((x): x is string => x != null)
       : [],
-    start_index: num(r.start_index),
-    end_index: num(r.end_index),
+    start_index: num(r.start_index) == null ? null : num(r.start_index)! + indexOffset,
+    end_index: num(r.end_index) == null ? null : num(r.end_index)! + indexOffset,
     matches: clusters.map(normalizeCitationMatch),
   };
 }
@@ -1774,31 +1804,54 @@ async function caseDetail(args: Row): Promise<unknown> {
 }
 
 async function citationLookup(args: Row): Promise<unknown> {
-  // NOT str(): str() trims, and the trimmed value is what went into the POST
-  // body, while the per-citation start_index / end_index the API returns are
-  // offsets into the text that was SENT. A draft pasted with a leading newline
-  // or indentation came back with every index shifted by the number of stripped
-  // leading characters — offsets into a string the caller never had, in the one
-  // tool whose output exists to locate a cite inside the caller's own document.
-  // The only thing the trim was used for is the non-empty check below.
+  // NOT str(): str() trims, and the caller's own string is the coordinate
+  // system the returned offsets have to land in — this is the one tool whose
+  // output exists to locate a cite inside the caller's document.
   const text = typeof args.text === "string" ? args.text : args.text == null ? "" : String(args.text);
   if (text.trim() === "") {
     throw new Error('text is required (free text containing citations, or a single citation string like "410 U.S. 113").');
   }
+
+  // The offsets come back anchored to text.strip(), NOT to whatever this client
+  // POSTs. `text` is a DRF CharField with trim_whitespace defaulting to true
+  // (rest_framework/fields.py:729, to_internal_value:762), and the extractor
+  // runs over the VALIDATED value: cl/api/utils.py's
+  // CitationCountRateThrottle.get_citation_count_from_request calls
+  // view.validate_request_data(request), feeds validated_data["text"] to
+  // eyecite.get_citations, and stashes the result on view.citation_list, which
+  // cl/citations/api_views.py reads straight into start_index / end_index via
+  // citation.span(). Sending the text untrimmed does not move them.
+  //
+  // So do the leading strip HERE and keep the count. After this the first
+  // surviving character is one Python's strip() will not remove, so the server
+  // cannot shift anything further, and `indexOffset` is known by construction
+  // rather than inferred from a guess at Python's whitespace set.
+  const sent = text.replace(PY_STRIP_LEADING_RE, "");
+  const indexOffset = text.length - sent.length;
+
   // The endpoint validates text at 64,000 chars; enforce pre-flight.
+  // Measure what the SERVER measures: DRF's Field.run_validation calls
+  // to_internal_value (which strips) and only then run_validators, so
+  // max_length=64_000 is applied to the stripped value. Counting the untrimmed
+  // string refused a 64,000-character brief locally over a trailing newline
+  // that upstream would have dropped before counting.
+  //
   // Nothing is truncated: a verifier that silently drops the tail of a brief
   // would pass exactly the citations it never checked.
-  if (text.length > CITATION_TEXT_CAP) {
+  const validatedLength = sent.replace(PY_STRIP_TRAILING_RE, "").length;
+  if (validatedLength > CITATION_TEXT_CAP) {
     throw new Error(
-      `text is ${text.length} characters; the CourtListener citation-lookup endpoint caps text at ${CITATION_TEXT_CAP}. ` +
-        "Nothing was sent and nothing was truncated (a dropped tail would mean unchecked citations). " +
-        `Split the document and call once per chunk; each call checks up to ${CITATION_MAX_PER_REQUEST} citations.`,
+      `text is ${validatedLength} characters once surrounding whitespace is stripped; the CourtListener ` +
+        `citation-lookup endpoint caps text at ${CITATION_TEXT_CAP} (its serializer is a DRF CharField, which ` +
+        "strips before validating). Nothing was sent and nothing was truncated (a dropped tail would mean " +
+        `unchecked citations). Split the document and call once per chunk; each call checks up to ` +
+        `${CITATION_MAX_PER_REQUEST} citations.`,
     );
   }
 
   // POST /citation-lookup/ is authentication-only (HTTP 401 without a token).
   // requireAuth throws the token() setup error pre-flight.
-  const json = await clPost("/citation-lookup/", { text }, { requireAuth: true });
+  const json = await clPost("/citation-lookup/", { text: sent }, { requireAuth: true });
 
   // The response is a bare JSON array (no DRF envelope), one item per citation
   // recognized in the text.
@@ -1822,7 +1875,7 @@ async function citationLookup(args: Row): Promise<unknown> {
     );
   }
   const rows = json as Row[];
-  const results = rows.map(normalizeCitationResult);
+  const results = rows.map((r) => normalizeCitationResult(r, indexOffset));
 
   const found = results.filter((r) => r.verified === true).length;
   const notFound = results.filter((r) => r.verdict === "NOT_FOUND").length;
@@ -1842,7 +1895,7 @@ async function citationLookup(args: Row): Promise<unknown> {
   if (otherUnverified > 0) problems.push(`${otherUnverified} with an unexpected per-citation status`);
 
   return {
-    query: { text_chars: text.length },
+    query: { text_chars: sent.length },
     citations_checked: results.length,
     found,
     not_found: notFound,

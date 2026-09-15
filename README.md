@@ -28,7 +28,7 @@ It wraps CourtListener's REST API v4, normalizing the raw JSON (`caseName`, `dat
 - Auth: a free API token, sent as the header `Authorization: Token <token>`.
 - Envelope: search and list endpoints return the DRF shape `{ count, next, previous, results: [...] }`. `/search/` and `/people/` paginate by opaque `cursor`; `/courts/` paginates by page number (`?page=N`). Detail endpoints return a bare object. `POST /citation-lookup/` returns a bare JSON array (one item per citation recognized in the text).
 - Access: `/search/`, `/courts/`, `/people/`, and `/audio/{id}/` answer without a token at a low rate limit, so those tools attach the token only when it is set (a token raises the limit). `/clusters/{id}/`, `/opinions/{id}/`, `/opinions-cited/`, `/docket-entries/`, and `POST /citation-lookup/` return HTTP 401 without a token, so `case_detail`, `citation_lookup`, `case_authorities`, and `docket_entries` require one. The `/docket-entries/` filter parameter is `docket` (not `docket_id` — the API answers 400 `unknown_params` otherwise; found live).
-- Citation-lookup limits (server-side): `text` max 64,000 characters (enforced pre-flight here with a clear error; the tool never truncates, since a dropped tail would mean unchecked citations); the first 250 citations per call are looked up and any beyond that come back flagged per-item as not checked; rate limit 60 citations/min.
+- Citation-lookup limits (server-side): `text` max 64,000 characters, counted after surrounding whitespace is stripped, since the serializer strips before it validates (enforced pre-flight here with a clear error; the tool never truncates, since a dropped tail would mean unchecked citations); the first 250 citations per call are looked up and any beyond that come back flagged per-item as not checked; rate limit 60 citations/min.
 
 Sources:
 
@@ -56,7 +56,7 @@ Sources:
 | `citations` (array of `{volume, reporter, page}`) | `citations` (formatted strings) | case_detail (cluster) |
 | `sub_opinions` (array of URLs) | `sub_opinion_ids` | case_detail (cluster) |
 | `plain_text` (fallback `html_with_citations`) | `text` (+ `text_source`, `text_truncated`) | case_detail (opinion) |
-| `citation`, `normalized_citations`, `start_index`, `end_index` | same names | citation_lookup (per citation) |
+| `citation`, `normalized_citations`, `start_index`, `end_index` | same names; the two offsets are re-anchored onto the caller's own string | citation_lookup (per citation) |
 | `status` (200/300/400/404/429), `error_message` | `status` + `verdict` (`FOUND`, `FOUND_MULTIPLE`, `UNKNOWN_REPORTER`, `NOT_FOUND`, `NOT_CHECKED_OVER_CAP`) + `verified`, `error_message` | citation_lookup (per citation) |
 | `clusters` (array of cluster objects) | `matches` (cluster id, case name, date, citations, link) | citation_lookup (per citation) |
 | `count` on a `cites:()` search | `total_citing` (hits normalized exactly as opinion_search hits) | cited_by |
