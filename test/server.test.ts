@@ -1271,6 +1271,49 @@ describe("free-text q never leaves with a dangling escape", () => {
   });
 });
 
+// Sanitizing the backslash fixed one character of a class. Verified live
+// 2026-09-14, unauthenticated:
+//   /search/?type=o&q=eviction~~  -> HTTP 500
+//   /search/?type=o&q=eviction\   -> HTTP 500
+// both with {"detail":"Internal Server Error. Please try again later or review
+// your query."}, while q=eviction" and q=eviction( answer a plain 400. That
+// body is the search parser refusing the query, so it is permanent; the generic
+// 500 above ("upstream boom") still gets its three attempts, and that contrast
+// is the invariant.
+describe("a query CourtListener cannot parse is refused once, not three times", () => {
+  const PARSE_REFUSAL = JSON.stringify({
+    detail: "Internal Server Error. Please try again later or review your query.",
+  });
+
+  it.each([
+    ["opinion_search", { q: "eviction~~" }],
+    ["docket_lookup", { q: "eviction~~" }],
+    ["oral_arguments", { q: "eviction~~" }],
+    ["cited_by", { opinion_id: 2812209 }],
+  ])("%s spends one request, not three, on a parse refusal", async (tool, args) => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call(tool, args);
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the caller it is their query, and which characters to look at", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("opinion_search", { q: "eviction~~" });
+    const text = String(res.content[0].text);
+    expect(text).toMatch(/could not parse this query/i);
+    expect(text).toMatch(/not retried/i);
+    expect(text).toMatch(/unbalanced quote/i);
+  });
+
+  it("a 503 carrying the same body is the same refusal", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 503 }));
+    const res: any = await call("opinion_search", { q: "eviction~~" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 // An /audio/{id}/ record, field names as the live API serves them
 // (unauthenticated, 2026-09-14). Audio 106247 is a 1,051-second circuit
 // argument whose real transcript is 13,974 characters; the text is abbreviated

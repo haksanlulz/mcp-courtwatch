@@ -321,6 +321,26 @@ async function readClResponse(
         ` newline, or the word "Token" included in the value), and regenerate it from your` +
         ` CourtListener profile's API page if it is stale (${TOKEN_SIGNUP_URL}).`;
     }
+    // A 5xx whose DRF detail says "review your query" is CourtListener's SEARCH
+    // parser refusing the query, not a wobble, and it answers the same however
+    // often it is asked. Verified live 2026-09-14, unauthenticated:
+    //   /search/?type=o&q=eviction~~  -> HTTP 500
+    //   /search/?type=o&q=eviction\   -> HTTP 500
+    // both with {"detail":"Internal Server Error. Please try again later or
+    // review your query."} — while q=eviction" and q=eviction( answer a plain
+    // (non-retried) 400.
+    //
+    // Without this, isRetryable() reads a parse refusal as a come-back and
+    // spends three requests on a nonprofit's search cluster per bad query.
+    // stripDanglingEscape sanitizes ONE character of this class; this covers
+    // the class, which is the half the earlier fix stopped short of.
+    if (res.status >= 500 && /review your query/i.test(detail)) {
+      throw new PermanentError(
+        `CourtListener could not parse this query (HTTP ${res.status}): ${detail} ` +
+          "Not retried: the same query answers the same way however often it is asked. Check it for an " +
+          "unbalanced quote or bracket, or a stray operator character (\\ ~ ^ : ( ) [ ] { }).",
+      );
+    }
     throw new HttpError(message, res.status);
   }
 
