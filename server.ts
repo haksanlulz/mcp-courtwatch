@@ -276,20 +276,44 @@ const RETRY_BACKOFF_MS = [500, 2000];
 const RETRY_DEADLINE_MS = 40_000;
 const HTTP_TIMEOUT_MS = 15_000;
 
+/**
+ * The wall-clock window a retry can actually land in: how long withRetry will
+ * still be waiting when it starts its LAST attempt. This walks the same
+ * backoffs and the same deadline test the loop below does, so the two cannot
+ * drift.
+ *
+ * RETRY_DEADLINE_MS is NOT this number and must not be compared against a 429's
+ * stated wait: it only bounds how late an attempt may START. With the shipped
+ * [500, 2000] the last attempt begins about 2.5s in, so measuring against the
+ * 40s deadline left every stated wait between ~3s and 40s buying two requests
+ * certain to fail — and that is the common band, not the rare one. The
+ * per-minute throttle is the one a new account meets first, and DRF's message
+ * for it names a wait of up to 60 seconds, most of which lands under 40.
+ */
+const RETRY_WINDOW_MS = (() => {
+  let elapsed = 0;
+  for (let attempt = 0; attempt < HTTP_ATTEMPTS - 1; attempt++) {
+    const backoff = RETRY_BACKOFF_MS[attempt] ?? 2000;
+    if (elapsed + backoff + HTTP_TIMEOUT_MS > RETRY_DEADLINE_MS) break;
+    elapsed += backoff;
+  }
+  return elapsed;
+})();
+
 function isRetryable(e: unknown): boolean {
   if (e instanceof PermanentError) return false;
   if (e instanceof HttpError) {
     // A 429 usually means "slow down" and is worth another attempt. A 429 that
-    // NAMES a wait longer than the whole retry deadline is not: all three
-    // attempts are certain to fail, and the two extra requests are spent
-    // against a budget the server has already said is gone — on a free
-    // nonprofit endpoint, from a server whose premise is politeness toward it.
-    // The wait is machine-readable and already parsed into the message. Live
-    // 2026-09-14 the daily ceiling answers "Request was throttled. Rate limit
-    // exceeded: 125/day. Expected available in 46707 seconds."
+    // NAMES a wait longer than the window the retries occupy is not: every
+    // remaining attempt is certain to fail, and each is spent against a budget
+    // the server has already said is gone — on a free nonprofit endpoint, from
+    // a server whose premise is politeness toward it. The wait is
+    // machine-readable and already parsed into the message. Live 2026-09-14 the
+    // daily ceiling answers "Request was throttled. Rate limit exceeded:
+    // 125/day. Expected available in 46707 seconds."
     if (e.status === 429) {
       const wait = /available in (\d+) seconds/i.exec(e.message);
-      if (wait && Number(wait[1]) * 1000 > RETRY_DEADLINE_MS) return false;
+      if (wait && Number(wait[1]) * 1000 > RETRY_WINDOW_MS) return false;
       return true;
     }
     return e.status >= 500;
