@@ -476,6 +476,14 @@ describe("opinion_search", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects an unknown argument with a near-miss, before any network call", async () => {
+    const res: any = await call("opinion_search", { q: "x", filed_afer: "2020-01-01" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/opinion_search does not accept "filed_afer" \(did you mean "filed_after"\?\)/);
+    expect(res.content[0].text).toMatch(/Nothing was queried/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects an invalid order_by and a malformed date without calling the API", async () => {
     const bad1: any = await call("opinion_search", { q: "x", order_by: "cheapest" });
     expect(bad1.isError).toBe(true);
