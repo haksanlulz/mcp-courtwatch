@@ -471,6 +471,33 @@ describe("opinion_search", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // The shape test alone accepted 2026-13-45 and 2026-00-00: right shape, no
+  // such day. They then left as real filed_after / argued_after parameters,
+  // past the one guard whose whole purpose is to fail before a network call.
+  it.each([
+    ["opinion_search", "filed_after"],
+    ["opinion_search", "filed_before"],
+    ["oral_arguments", "argued_after"],
+    ["oral_arguments", "argued_before"],
+  ])("%s rejects a well-shaped but impossible %s, with no network call", async (tool, field) => {
+    for (const value of ["2026-13-45", "2026-00-10", "2026-02-30", "2026-04-31", "2026-11-00"]) {
+      const res: any = await call(tool, { q: "x", [field]: value });
+      expect(res.isError, `${tool} ${field}=${value} was accepted`).toBe(true);
+      expect(res.content[0].text).toMatch(/must be a real ISO date/i);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["2024-02-29", "2026-02-28", "2026-12-31", "1789-09-24"])(
+    "still accepts the real date %s",
+    async (value) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ count: 0, next: null, results: [] }));
+      const res: any = await call("opinion_search", { q: "x", filed_after: value });
+      expect(res.isError).toBeFalsy();
+      expect(lastUrl().searchParams.get("filed_after")).toBe(value);
+    },
+  );
+
   // The option tables are plain object literals, so they inherit
   // Object.prototype: ORDER_BY["toString"] is a truthy function and
   // "constructor" in OA_ORDER_BY is true. The two validators were a truthiness

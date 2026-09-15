@@ -1118,12 +1118,33 @@ function clampLimit(v: unknown, fallback: number, max: number = MAX_RESULTS): nu
   return Math.max(1, Math.min(max, Math.floor(n)));
 }
 
-/** Validate an optional ISO date (YYYY-MM-DD), or throw. Returns undefined when absent. */
+/**
+ * Validate an optional ISO date (YYYY-MM-DD), or throw. Returns undefined when absent.
+ *
+ * Shape AND calendar. The shape test alone accepted 2026-13-45 and 2026-00-00,
+ * so a typo walked past the one guard that exists to fail BEFORE a network call
+ * and left as a real filed_after / filed_before / argued_after / argued_before
+ * query parameter. The error it did not throw said "must be an ISO date", which
+ * was the claim being made and not the claim being checked.
+ *
+ * Round-tripping through Date is what rejects a month 13 or a February 30: Date
+ * rolls an out-of-range component over into the next month or year, so a value
+ * that does not read back identically was never a real date.
+ */
 function normDate(v: unknown, label: string): string | undefined {
   const s = str(v);
   if (!s) return undefined;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    throw new Error(`${label} must be an ISO date (YYYY-MM-DD); got: ${JSON.stringify(v)}`);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  const d = m ? new Date(`${s}T00:00:00Z`) : null;
+  if (
+    !m ||
+    !d ||
+    Number.isNaN(d.getTime()) ||
+    d.getUTCFullYear() !== Number(m[1]) ||
+    d.getUTCMonth() + 1 !== Number(m[2]) ||
+    d.getUTCDate() !== Number(m[3])
+  ) {
+    throw new Error(`${label} must be a real ISO date (YYYY-MM-DD); got: ${JSON.stringify(v)}`);
   }
   return s;
 }
