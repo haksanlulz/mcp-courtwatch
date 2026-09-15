@@ -19,6 +19,11 @@
 // pass. Counting it separately fixed the half a person reads; the exit code is
 // the half a wrapper reads, and it stayed 0.
 //
+// Request cost: twelve, at minimum — eleven checks plus one to resolve a docket
+// id — and up to two more when the docket_entries rung has to walk past a
+// docket RECAP holds nothing for. That matters against a new account's 5/min,
+// 50/hour and 125/day ceilings; see the README's rate-limit section.
+//
 //   npm run smoke
 //
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -247,18 +252,44 @@ async function main(): Promise<void> {
   });
 
   await run("docket_entries", async () => {
-    // Resolve a real docket id first, the way an agent would.
+    // The eleventh check, and the last one whose assertions could not fail.
+    // `Array.isArray(results)` is always true (the handler maps extractResults'
+    // array), `typeof total_reported === "boolean"` is always true
+    // (`totalAuthorities != null`), and the note is a string constant in
+    // server.ts — so the only real assertion sat behind `if (results.length >
+    // 0)` and the rung printed ok on `returned: 0`. A regressed `docket` filter
+    // parameter (the one contract fact the README says was discoverable only
+    // live) and an empty archive look identical from there.
+    //
+    // RECAP genuinely holds nothing for some dockets, so an empty page IS a
+    // real answer for one docket. Walking candidates until one has entries is
+    // what separates that from the filter being broken; SKIP when none does,
+    // which exits 2 rather than green. Capped at three so a bad day costs at
+    // most two extra requests against a rate-limited account.
     const dockets = parse(await client.callTool({ name: "docket_lookup", arguments: { q: "New York" } }));
-    const docketId = dockets.results?.find((r: any) => r.docket_id != null)?.docket_id;
-    if (docketId == null) skip("docket_lookup produced no docket id");
-    const body = parse(await client.callTool({ name: "docket_entries", arguments: { docket_id: docketId, limit: 5 } }));
-    console.log(`     -> docket ${docketId}: ${body.total_entries ?? "(not reported)"} entr(ies); first: #${body.results[0]?.entry_number ?? "?"} ${body.results[0]?.date_filed ?? ""}`);
-    need(Array.isArray(body.results), "expected an entries array");
-    need(typeof body.total_reported === "boolean", "total_reported should say whether the count was reported");
-    need(String(body.note).includes("PACER"), "the RECAP coverage caveat should ride the payload");
-    // RECAP genuinely holds nothing for some dockets, so an empty page is a
-    // real answer; what must hold is that a returned entry is well formed.
-    if (body.results.length > 0) positiveInt(body.results[0].id, "results[0].id");
+    const candidates: number[] = (dockets.results ?? [])
+      .map((r: any) => r.docket_id)
+      .filter((d: any) => typeof d === "number" && d > 0);
+    if (candidates.length === 0) skip("docket_lookup produced no docket id");
+
+    for (const docketId of candidates.slice(0, 3)) {
+      const body = parse(
+        await client.callTool({ name: "docket_entries", arguments: { docket_id: docketId, limit: 5 } }),
+      );
+      need(String(body.note).includes("PACER"), "the RECAP coverage caveat should ride the payload");
+      if (body.returned === 0) continue;
+      console.log(`     -> docket ${docketId}: ${body.total_entries ?? "(not reported)"} entr(ies); first: #${body.results[0]?.entry_number ?? "?"} ${body.results[0]?.date_filed ?? ""}`);
+      const first = body.results[0];
+      positiveInt(first.id, "results[0].id");
+      // A renamed serializer field normalizes to all-null and today reads as a
+      // real entry with nothing on file. At least one of the three must land.
+      need(
+        first.entry_number != null || first.date_filed != null || first.description != null,
+        `every field of the first entry normalized to null — check whether /docket-entries/ renamed entry_number / date_filed / description; got ${JSON.stringify(first)}`,
+      );
+      return;
+    }
+    skip(`none of the first ${Math.min(3, candidates.length)} candidate docket(s) has RECAP entries`);
   });
 
   await client.close();
