@@ -1703,8 +1703,15 @@ async function caseDetail(args: Row): Promise<unknown> {
 }
 
 async function citationLookup(args: Row): Promise<unknown> {
-  const text = str(args.text);
-  if (!text) {
+  // NOT str(): str() trims, and the trimmed value is what went into the POST
+  // body, while the per-citation start_index / end_index the API returns are
+  // offsets into the text that was SENT. A draft pasted with a leading newline
+  // or indentation came back with every index shifted by the number of stripped
+  // leading characters — offsets into a string the caller never had, in the one
+  // tool whose output exists to locate a cite inside the caller's own document.
+  // The only thing the trim was used for is the non-empty check below.
+  const text = typeof args.text === "string" ? args.text : args.text == null ? "" : String(args.text);
+  if (text.trim() === "") {
     throw new Error('text is required (free text containing citations, or a single citation string like "410 U.S. 113").');
   }
   // The endpoint validates text at 64,000 chars; enforce pre-flight.

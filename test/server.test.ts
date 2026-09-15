@@ -842,6 +842,44 @@ describe("citation_lookup", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(["   ", "\n\t \n"])("still refuses whitespace-only text (%j)", async (text) => {
+    const res: any = await call("citation_lookup", { text });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // start_index / end_index are offsets into the text that was SENT, and the
+  // caller uses them to find the cite in their own draft. The text was being
+  // trimmed on the way out, so a draft pasted with a leading newline or
+  // indentation got back indexes into a string it never had.
+  it("sends the caller's text byte-for-byte, so the returned offsets are offsets into it", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const text = "\n\n    See Roe v. Wade, 410 U.S. 113 (1973).   \n";
+    await call("citation_lookup", { text });
+    expect(JSON.parse(lastInit().body!)).toEqual({ text });
+  });
+
+  it("the offsets it returns land on the citation in the caller's own text", async () => {
+    const text = "\n   See Roe v. Wade, 410 U.S. 113 (1973).";
+    const start = text.indexOf("410 U.S. 113");
+    const end = start + "410 U.S. 113".length;
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ ...CITATION_LOOKUP_MIXED[0], start_index: start, end_index: end }]),
+    );
+    const body = payload(await call("citation_lookup", { text }));
+    const sent = JSON.parse(lastInit().body!).text as string;
+    expect(sent.slice(body.results[0].start_index, body.results[0].end_index)).toBe("410 U.S. 113");
+    expect(text.slice(body.results[0].start_index, body.results[0].end_index)).toBe("410 U.S. 113");
+  });
+
+  it("counts the text it actually sends", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const text = "  410 U.S. 113  ";
+    const body = payload(await call("citation_lookup", { text }));
+    expect(body.query.text_chars).toBe(text.length);
+  });
+
   it("errors clearly when the token is missing, without calling the API", async () => {
     delete process.env.COURTLISTENER_API_TOKEN;
     const res: any = await call("citation_lookup", { text: "410 U.S. 113" });
