@@ -303,13 +303,22 @@ type Row = Record<string, unknown>;
 type QueryValue = string | number | undefined | null;
 
 /**
+ * Characters the Elasticsearch query-string parser treats as operators. Only a
+ * CALLER-supplied string can carry one by accident; a fragment this server
+ * composes from validated input carries them on purpose. See the
+ * "review your query" branch in readClResponse for why the distinction decides
+ * whether a 500 is retried.
+ */
+const QUERY_METACHARACTER_RE = /[\\~^:()[\]{}"]/;
+
+/**
  * Read a CourtListener response: surface DRF errors ({"detail":"..."}) on
  * non-2xx, parse JSON on success, and reject non-JSON bodies (HTML error pages
  * / proxy interstitials arrive as non-JSON with a 200). Shared by clGet/clPost.
  */
 async function readClResponse(
   res: { ok: boolean; status: number; text: () => Promise<string> },
-  opts: { tokenAttached?: boolean } = {},
+  opts: { tokenAttached?: boolean; callerQuery?: string } = {},
 ): Promise<unknown> {
   const text = await res.text();
 
@@ -336,24 +345,42 @@ async function readClResponse(
         ` newline, or the word "Token" included in the value), and regenerate it from your` +
         ` CourtListener profile's API page if it is stale (${TOKEN_SIGNUP_URL}).`;
     }
-    // A 5xx whose DRF detail says "review your query" is CourtListener's SEARCH
-    // parser refusing the query, not a wobble, and it answers the same however
-    // often it is asked. Verified live 2026-09-14, unauthenticated:
-    //   /search/?type=o&q=eviction~~  -> HTTP 500
-    //   /search/?type=o&q=eviction\   -> HTTP 500
-    // both with {"detail":"Internal Server Error. Please try again later or
-    // review your query."} — while q=eviction" and q=eviction( answer a plain
-    // (non-retried) 400.
+    // A 5xx whose DRF detail says "review your query" MAY be CourtListener's
+    // search parser refusing the query. It may equally be the Elasticsearch
+    // cluster failing, and the body cannot tell the two apart.
     //
-    // Without this, isRetryable() reads a parse refusal as a come-back and
-    // spends three requests on a nonprofit's search cluster per bad query.
-    // stripDanglingEscape sanitizes ONE character of this class; this covers
-    // the class, which is the half the earlier fix stopped short of.
-    if (res.status >= 500 && /review your query/i.test(detail)) {
+    // Vendor source, cl/search/api_utils.py: both
+    //   except (TransportError, ConnectionError, RequestError): error_to_raise = ElasticServerError
+    //   except ApiError: ... else: error_to_raise = ElasticServerError
+    // end at `raise error_to_raise()` with no argument, so both land on
+    // cl/search/exception.py's ElasticServerError.default_detail —
+    // "Internal Server Error. Please try again later or review your query."
+    // (A query the parser genuinely rejects maps to ElasticBadRequestError, an
+    // HTTP 400, which was never retried anyway.) So a cluster blip — precisely
+    // what withRetry exists for, and what the vendor's own text says to come
+    // back for — must keep its attempts instead of being blamed on the caller.
+    //
+    // The caller's OWN text is the extra evidence: only a caller string can
+    // carry a parser metacharacter. Query fragments this server composes itself
+    // — cites:(<validated int>), docketNumber:"..." — always contain ':' and
+    // '(' and are built from validated input, so a 500 on one of those is
+    // upstream by construction and keeps its attempts.
+    //
+    // Live 2026-09-14, unauthenticated: /search/?type=o&q=eviction~~ and
+    // &q=eviction\ both answer HTTP 500 with that body, while q=eviction" and
+    // q=eviction( answer a plain (non-retried) 400.
+    if (
+      res.status >= 500 &&
+      /review your query/i.test(detail) &&
+      opts.callerQuery !== undefined &&
+      QUERY_METACHARACTER_RE.test(opts.callerQuery)
+    ) {
       throw new PermanentError(
         `CourtListener could not parse this query (HTTP ${res.status}): ${detail} ` +
-          "Not retried: the same query answers the same way however often it is asked. Check it for an " +
-          "unbalanced quote or bracket, or a stray operator character (\\ ~ ^ : ( ) [ ] { }).",
+          "Not retried: your query carries a search-operator character, and a query the parser refuses " +
+          "answers the same way however often it is asked. Check it for an unbalanced quote or bracket, " +
+          "or a stray operator character (\\ ~ ^ : ( ) [ ] { }). CourtListener serves this same message " +
+          "for an Elasticsearch outage, so if the query is well-formed, retry it later.",
       );
     }
     throw new HttpError(message, res.status);
@@ -421,6 +448,9 @@ async function clGet(
     requireAuth?: boolean;
     expectResults?: string;
     expectDetail?: { id: number; source: string };
+    /** The caller's own free text, when this request carries any. Decides
+     * whether a "review your query" 500 is the parser or the cluster. */
+    callerQuery?: string;
   } = {},
 ): Promise<unknown> {
   const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
@@ -436,7 +466,10 @@ async function clGet(
 
   const value = await withRetry(async () => {
     const res = await throttled(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
-    return readClResponse(res, { tokenAttached: headers.Authorization !== undefined });
+    return readClResponse(res, {
+      tokenAttached: headers.Authorization !== undefined,
+      callerQuery: opts.callerQuery,
+    });
   });
   // Validate BEFORE writing the cache. extractResults throws on an unexpected
   // envelope, and the cache above this line would otherwise pin that one bad
@@ -1536,7 +1569,7 @@ async function opinionSearch(args: Row): Promise<unknown> {
       order_by,
       cursor: cursor ?? undefined,
     },
-    { expectResults: source },
+    { expectResults: source, callerQuery: q },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeOpinionHit);
@@ -1615,7 +1648,9 @@ async function docketLookup(args: Row): Promise<unknown> {
       court: court ?? undefined,
       cursor: cursor ?? undefined,
     },
-    { expectResults: source },
+    // Only the caller's halves. The docketNumber: operator fragment is composed
+    // here, so its ':' and '"' are not evidence of a caller typo.
+    { expectResults: source, callerQuery: [q, docketNumber].filter(Boolean).join(" ") || undefined },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeDocketHit);
@@ -2012,7 +2047,7 @@ async function oralArguments(args: Row): Promise<unknown> {
       argued_before: arguedBefore,
       cursor: cursor ?? undefined,
     },
-    { expectResults: source },
+    { expectResults: source, callerQuery: q },
   );
   const page = extractResults(json, source);
   const results = page.slice(0, limit).map(normalizeOralArgumentHit);

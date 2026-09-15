@@ -1369,10 +1369,17 @@ describe("free-text q never leaves with a dangling escape", () => {
 //   /search/?type=o&q=eviction~~  -> HTTP 500
 //   /search/?type=o&q=eviction\   -> HTTP 500
 // both with {"detail":"Internal Server Error. Please try again later or review
-// your query."}, while q=eviction" and q=eviction( answer a plain 400. That
-// body is the search parser refusing the query, so it is permanent; the generic
-// 500 above ("upstream boom") still gets its three attempts, and that contrast
-// is the invariant.
+// your query."}, while q=eviction" and q=eviction( answer a plain 400.
+//
+// That body ALONE does not say the parser refused anything. Vendor source,
+// cl/search/api_utils.py, raises ElasticServerError for a TransportError /
+// ConnectionError / non-parse ApiError as well, via `raise error_to_raise()`
+// with no argument — so both land on the same ElasticServerError.default_detail
+// in cl/search/exception.py. The evidence that separates them is the CALLER's
+// own text: only a caller string can carry a parser metacharacter by accident.
+// So a metacharacter-bearing query is refused once, and the same body on a
+// clean query or on a server-composed one keeps all three attempts, because
+// there it can only be the cluster.
 describe("a query CourtListener cannot parse is refused once, not three times", () => {
   const PARSE_REFUSAL = JSON.stringify({
     detail: "Internal Server Error. Please try again later or review your query.",
@@ -1382,7 +1389,6 @@ describe("a query CourtListener cannot parse is refused once, not three times", 
     ["opinion_search", { q: "eviction~~" }],
     ["docket_lookup", { q: "eviction~~" }],
     ["oral_arguments", { q: "eviction~~" }],
-    ["cited_by", { opinion_id: 2812209 }],
   ])("%s spends one request, not three, on a parse refusal", async (tool, args) => {
     fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
     const res: any = await call(tool, args);
@@ -1404,6 +1410,31 @@ describe("a query CourtListener cannot parse is refused once, not three times", 
     const res: any = await call("opinion_search", { q: "eviction~~" });
     expect(res.isError).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The other half of the same invariant. cited_by composes cites:(<validated
+  // integer>) itself, so a parse refusal on it is impossible by construction —
+  // that body there can only be an Elasticsearch failure, which is exactly what
+  // the retries exist for, and what CourtListener's own text asks for.
+  it("still retries the same body when the query was not the caller's", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("cited_by", { opinion_id: 2812209 });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("a clean caller query gets its attempts back — the body is ambiguous, the query is the evidence", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("opinion_search", { q: "eviction" });
+    expect(res.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // A caller who typed no metacharacter must not be told to go hunting for one.
+  it("does not blame the caller's query when the query carries no operator character", async () => {
+    fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
+    const res: any = await call("opinion_search", { q: "eviction" });
+    expect(String(res.content[0].text)).not.toMatch(/could not parse this query/i);
   });
 });
 
