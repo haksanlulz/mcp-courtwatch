@@ -1802,6 +1802,37 @@ describe("a detail endpoint must answer with the record that was asked for", () 
     const body = payload(await call("case_detail", { id: 9335501 }));
     expect(body.case_name).toBe("Miranda v. Selig");
   });
+
+  // The cases above all run under beforeEach(clearClCache), so they could not
+  // see the other half: expectDetail ran at the CALL SITE, after clGet had
+  // already written the bad body to a 24h cache, and the repeat call answered
+  // the pinned error with no request at all. These do not clear the cache
+  // mid-test, which is the whole point.
+  it.each([
+    ["case_detail", { id: 9335501 }, jsonResponse(CLUSTER), (b: any) => expect(b.case_name).toBe("Miranda v. Selig")],
+    [
+      "oral_argument_transcript",
+      { audio_id: 106247 },
+      jsonResponse(audioRecord()),
+      (b: any) => expect(b.stt_verdict).toBe("COMPLETE"),
+    ],
+  ] as Array<[string, Record<string, unknown>, unknown, (b: any) => void]>)(
+    "%s does not cache a bad detail body — the repeat call still asks upstream",
+    async (tool, args, goodResponse, assertGood) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "Not found." }));
+      const bad: any = await call(tool, args);
+      expect(bad.isError).toBe(true);
+      const afterBad = fetchMock.mock.calls.length;
+      expect(afterBad).toBe(1);
+
+      // Upstream recovers. The identical call must reach it, not the pin.
+      fetchMock.mockResolvedValueOnce(goodResponse);
+      const good: any = await call(tool, args);
+      expect(good.isError).toBeFalsy();
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(afterBad);
+      assertGood(payload(good));
+    },
+  );
 });
 
 describe("court_list cache", () => {

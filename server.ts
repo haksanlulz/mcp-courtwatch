@@ -382,7 +382,11 @@ export function clearClCache(): void {
 async function clGet(
   path: string,
   params: Record<string, QueryValue> = {},
-  opts: { requireAuth?: boolean; expectResults?: string } = {},
+  opts: {
+    requireAuth?: boolean;
+    expectResults?: string;
+    expectDetail?: { id: number; source: string };
+  } = {},
 ): Promise<unknown> {
   const headers = buildHeaders(opts.requireAuth === true); // may throw before fetch
   // Auth is part of the key: an authenticated read can return fields an
@@ -410,6 +414,15 @@ async function clGet(
   //
   // extractResults is pure, so the caller's own call is left in place.
   if (opts.expectResults !== undefined) extractResults(value, opts.expectResults);
+  // The same reason, one endpoint class over. expectDetail is the detail
+  // endpoints' envelope check and it ran only at the call site, i.e. after this
+  // cacheSet, so the guarantee above covered the list/search path only. A
+  // 200-served {"detail":"Not found."} was therefore pinned: the identical
+  // case_detail / oral_argument_transcript kept throwing with ZERO network
+  // calls for CACHE_TTL_MS after upstream recovered.
+  if (opts.expectDetail !== undefined) {
+    expectDetail(value, opts.expectDetail.id, opts.expectDetail.source);
+  }
   cacheSet(cacheKey, value);
   return value;
 }
@@ -1657,12 +1670,16 @@ async function caseDetail(args: Row): Promise<unknown> {
 
   // /clusters/{id}/ and /opinions/{id}/ are authentication-only: requireAuth makes
   // clGet throw the token() setup error before any network call when unset.
+  // The source is named once and handed to both: clGet validates the envelope
+  // before caching it, and the caller keeps its own (pure) call for the type.
   if (kind === "opinion") {
-    const o = await clGet(`/opinions/${id}/`, {}, { requireAuth: true });
-    return normalizeOpinionDetail(expectDetail(o, id, `case_detail (/opinions/${id}/)`));
+    const source = `case_detail (/opinions/${id}/)`;
+    const o = await clGet(`/opinions/${id}/`, {}, { requireAuth: true, expectDetail: { id, source } });
+    return normalizeOpinionDetail(expectDetail(o, id, source));
   }
-  const c = await clGet(`/clusters/${id}/`, {}, { requireAuth: true });
-  return normalizeClusterDetail(expectDetail(c, id, `case_detail (/clusters/${id}/)`));
+  const source = `case_detail (/clusters/${id}/)`;
+  const c = await clGet(`/clusters/${id}/`, {}, { requireAuth: true, expectDetail: { id, source } });
+  return normalizeClusterDetail(expectDetail(c, id, source));
 }
 
 async function citationLookup(args: Row): Promise<unknown> {
@@ -2013,10 +2030,11 @@ async function oralArgumentTranscript(args: Row): Promise<unknown> {
 
   // /audio/{id}/ answers unauthenticated (verified live 2026-09-14); the token
   // is attached opportunistically, for the higher rate limit only.
+  const source = `oral_argument_transcript (/audio/${audioId}/)`;
   const a = expectDetail(
-    await clGet(`/audio/${audioId}/`),
+    await clGet(`/audio/${audioId}/`, {}, { expectDetail: { id: audioId, source } }),
     audioId,
-    `oral_argument_transcript (/audio/${audioId}/)`,
+    source,
   );
 
   const full = typeof a.stt_transcript === "string" ? a.stt_transcript : "";
