@@ -270,7 +270,7 @@ function isRetryable(e: unknown): boolean {
     // nonprofit endpoint, from a server whose premise is politeness toward it.
     // The wait is machine-readable and already parsed into the message. Live
     // 2026-09-14 the daily ceiling answers "Request was throttled. Rate limit
-    // exceeded: 125/day. Expected available in 48238 seconds."
+    // exceeded: 125/day. Expected available in 46707 seconds."
     if (e.status === 429) {
       const wait = /available in (\d+) seconds/i.exec(e.message);
       if (wait && Number(wait[1]) * 1000 > RETRY_DEADLINE_MS) return false;

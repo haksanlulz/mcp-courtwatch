@@ -562,11 +562,11 @@ describe("opinion_search", () => {
 
   // ...but not when the 429 names a wait the retries cannot outlast. Live
   // 2026-09-14 the daily ceiling answers "Rate limit exceeded: 125/day.
-  // Expected available in 48238 seconds" — 13.4 hours, against a 40s retry
+  // Expected available in 46707 seconds" — about 13 hours, against a 40s retry
   // deadline, so the two extra requests were spent on a budget CourtListener
   // had already said was gone.
   it.each([
-    ["the daily ceiling", "Request was throttled. Rate limit exceeded: 125/day. Expected available in 48238 seconds."],
+    ["the daily ceiling", "Request was throttled. Rate limit exceeded: 125/day. Expected available in 46707 seconds."],
     ["the hourly ceiling", "Request was throttled. Rate limit exceeded: 50/hour. Expected available in 2431 seconds."],
   ])("does NOT retry a 429 that names a wait longer than the retry deadline (%s)", async (_label, detail) => {
     fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail }), { ok: false, status: 429 }));
