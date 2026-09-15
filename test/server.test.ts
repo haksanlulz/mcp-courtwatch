@@ -862,6 +862,20 @@ describe("unknown tool", () => {
   it("rejects with a protocol error", async () => {
     await expect(call("does_not_exist", {})).rejects.toThrow();
   });
+
+  // The dispatch table is a plain object literal, so every Object.prototype
+  // member used to resolve as a "tool". "constructor" answered isError:false
+  // with the caller's own arguments plus the records-only disclaimer attached —
+  // a fabricated court record, labelled as a real one, one typo away.
+  // "does_not_exist" alone could not catch it: it is the one name that has no
+  // inherited answer.
+  it.each(["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf"])(
+    "does not dispatch the inherited property %s as a tool",
+    async (name) => {
+      await expect(call(name, { q: "x" })).rejects.toThrow(/Unknown tool/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

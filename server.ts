@@ -2117,7 +2117,17 @@ export function createServer(): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const handler = HANDLERS[name];
+    // hasOwnProperty, not an index read: HANDLERS is a plain object literal, so
+    // it inherits Object.prototype and `HANDLERS["constructor"]` is a truthy
+    // function. Same defect pickOption was written to close one function over,
+    // on the dispatch table instead of an option table, and worse here because
+    // the result is dressed as an answer: tools/call with name "constructor"
+    // returned isError:false and a payload that was the caller's own arguments
+    // carrying the records-only disclaimer — a fabricated "court record" one
+    // mistyped tool name away. "toString" answered {"result":"[object
+    // Undefined]"} as a success; "valueOf" and "hasOwnProperty" threw "Cannot
+    // convert undefined or null to object", naming no tool and blaming nothing.
+    const handler = Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : undefined;
     if (!handler) {
       throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
