@@ -287,7 +287,7 @@ npm run verify:mcpb  # packs the .mcpb, unpacks it, launches it through the mani
 
 Two tiers, split by script rather than by marker. `npm test` is the offline suite; CI runs it plus `npm run typecheck`, `npm run build`, `npm run verify:pack` and `npm run verify:mcpb` (ci.yml jobs test, package, consume). `npm run smoke` is the live upstream contract, token-gated, and not run in CI.
 
-Counts as of 2026-09-15 (fix round 2): 217 tests in 4 files (`npm test`), 3143 lines of app source and packaging scripts, 2635 lines of test source.
+Counts as of 2026-09-25: 224 tests in 4 files (`npm test`), 2919 lines of app source and packaging scripts, 2678 lines of test source.
 
 ```
 find . -path ./node_modules -prune -o -path ./dist -prune -o -path ./build -prune -o -path ./test -prune -o \( -name '*.ts' -o -name '*.mjs' \) -print | grep -v smoke.ts | xargs wc -l
