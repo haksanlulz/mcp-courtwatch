@@ -1904,9 +1904,6 @@ async function citationLookup(args: Row): Promise<unknown> {
   // system the returned offsets have to land in — this is the one tool whose
   // output exists to locate a cite inside the caller's document.
   const text = typeof args.text === "string" ? args.text : args.text == null ? "" : String(args.text);
-  if (text.trim() === "") {
-    throw new Error('text is required (free text containing citations, or a single citation string like "410 U.S. 113").');
-  }
 
   // The offsets come back anchored to text.strip(), NOT to whatever this client
   // POSTs. `text` is a DRF CharField with trim_whitespace defaulting to true
@@ -1924,6 +1921,12 @@ async function citationLookup(args: Row): Promise<unknown> {
   // rather than inferred from a guess at Python's whitespace set.
   const sent = text.replace(PY_STRIP_LEADING_RE, "");
   const indexOffset = text.length - sent.length;
+  // The emptiness guard tests `sent`, the string that is POSTed. text.trim()
+  // was the old test, and JS trim() uses \s, which misses \x1c-\x1f and \x85:
+  // text made only of those passed the guard and POSTed "".
+  if (sent === "") {
+    throw new Error('text is required (free text containing citations, or a single citation string like "410 U.S. 113").');
+  }
 
   // The endpoint validates text at 64,000 chars; enforce pre-flight.
   // Measure what the SERVER measures: DRF's Field.run_validation calls

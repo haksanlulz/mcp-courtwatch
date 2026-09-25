@@ -938,6 +938,20 @@ describe("citation_lookup", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // The emptiness guard has to test the string that gets POSTed. JS trim()
+  // uses \s, which misses \x1c-\x1f and \x85; the request path strips those
+  // too, so text made only of them used to pass the guard and POST "".
+  it.each([
+    ["a NEL", "\u0085"],
+    ["file/group/record/unit separators", "\u001c\u001d\u001e\u001f"],
+    ["a mix with ordinary whitespace", " \u0085\n\u001c\t"],
+  ])("refuses text made only of characters the request strips (%s)", async (_label, text) => {
+    const res: any = await call("citation_lookup", { text });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   // start_index / end_index exist so the caller can find the cite in their own
   // draft, and they arrive anchored to text.strip() no matter what this client
   // POSTs: `text` is a DRF CharField whose trim_whitespace defaults to true
