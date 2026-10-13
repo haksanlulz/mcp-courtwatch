@@ -302,6 +302,18 @@ Mutation probes (2026-09-14), each run and then reverted: restoring the bare `Nu
 
 The 60 `toHaveBeenCalled*` assertions (counted 2026-09-25 with `grep -o 'toHaveBeenCalled[A-Za-z]*' test/*.ts | wc -l`) each pin a named contract (no request leaves on a validation or missing-token error, retry count, cache hit, two-page walk, one status check per row). Policy: assert behavior and payloads, never merely that a function was called.
 
+## What I'd do differently
+
+The full record is the escape log in [GAUNTLET.md](GAUNTLET.md) §6. The short version:
+
+- **Fail loudly on a response you did not expect.** `citation_lookup` treated a non-array body as an empty list, so a broken upstream response read as `found: 0`, identical to a brief that cites nothing. That is the one tool whose job is catching a fabricated citation. Every list and detail read now rejects an envelope it does not recognize, before the cache can store it.
+- **After a fix, look for its siblings.** Several fixes stopped at the example they were given. The trailing-backslash sanitizer covered `docket_number` and not the free-text `q` of the same three tools. The prototype-key guard covered `order_by` and not the tool dispatch table, so `tools/call` with the name `constructor` answered as a successful court record. Each fix now includes a search for the same pattern.
+- **Say when a read is partial.** `judge_lookup` advertised up to 50 results from an endpoint that serves 20 and has no cursor, and returned 20 with nothing saying more matched. It now returns `more_available`, and the search tools and `court_list` say in a note when a read stopped short.
+- **Don't let the coverage doc assert coverage.** The GAUNTLET once listed 6 of the 10 tools, claimed two throttle tests that did not exist, and quoted a stale test count. The tool list is now checked by `verify:mcpb`, and test counts live only in output a command produces.
+- **Bump the version when the surface changes.** An eleventh tool and the whole `.mcpb` channel shipped as 1.1.0. Now 1.2.0, and the bundle probe asserts the version the server reports.
+
+Still open: two of the three planned acceptance specs in GAUNTLET §5; the live smoke fits a new CourtListener token's 50-requests-per-hour limit only about once an hour; and `oral_arguments` checks transcript availability only on request.
+
 ## AI assistance
 
 This project was built with AI assistance (Claude). Correctness was established by the test suite and typecheck (`npm test`, `npm run typecheck`): every tool is driven through a real MCP client over an in-memory transport with `fetch` stubbed to the documented CourtListener response shapes, and the unauthenticated search / courts / people surfaces were additionally checked against the live API. As of 2026-08-23 every tool, including the token-gated four, has additionally been verified live with a real token (`npm run smoke`, plus persona-driven scenario probes that surfaced and fixed the `docket` filter-param and fake-reporter-coverage findings). The author is accountable for what ships here.
