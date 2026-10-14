@@ -39,7 +39,7 @@
     "recap"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.32.1"
   },
   "devDependencies": {
     "@anthropic-ai/mcpb": "^2.1.2",
