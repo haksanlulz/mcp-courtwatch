@@ -2063,6 +2063,25 @@ describe("an unexpected response envelope", () => {
 });
 
 describe("a rejected token", () => {
+  it.each([200, 403, 405, 503])("human verification on HTTP %s is actionable and never retried", async (status) => {
+    delete process.env.COURTLISTENER_API_TOKEN;
+    fetchMock.mockResolvedValue(textResponse('<!doctype html><html><title>Human Verification</title><p>Please verify you are human</p></html>', {ok:status===200,status}));
+    const res:any=await call('opinion_search',{q:'miranda'});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/human verification/i);
+    expect(res.content[0].text).toContain('COURTLISTENER_API_TOKEN');
+    expect(res.content[0].text).toContain('https://www.courtlistener.com/');
+    expect(res.content[0].text).not.toContain('<html>');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('a verification page with a token offers manual access without claiming the token is invalid', async()=>{
+    fetchMock.mockResolvedValue(textResponse('<html>Human verification</html>',{ok:false,status:405}));
+    const res:any=await call('opinion_search',{q:'miranda'});
+    expect(res.content[0].text).toMatch(/token was already sent/i);
+    expect(res.content[0].text).not.toMatch(/invalid token/i);
+    expect(res.content[0].text).not.toContain('test-token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   // token() writes careful setup guidance when COURTLISTENER_API_TOKEN is
   // UNSET. optionalToken() checks truthiness only, so a wrong, expired, or
   // quote/newline-mangled value passes, goes out on the wire, and the user who

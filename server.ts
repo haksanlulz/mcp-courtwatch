@@ -362,6 +362,16 @@ async function readClResponse(
 ): Promise<unknown> {
   const text = await res.text();
 
+  if (/^\s*(?:<!doctype\s+html|<html)/i.test(text) && /human\s+verification|verify[^<]{0,80}human|captcha|bot\s+check/i.test(text)) {
+    throw new PermanentError(
+      `CourtListener returned a human verification page (HTTP ${res.status}); no search results were retrieved. ` +
+      (opts.tokenAttached
+        ? 'An API token was already sent. This page does not establish that the token is invalid; check your account access or contact CourtListener if it persists. '
+        : `Anonymous API access is unavailable for this request. Configure COURTLISTENER_API_TOKEN with your account's API token (${TOKEN_SIGNUP_URL}), then retry. `) +
+      'You can also search manually at https://www.courtlistener.com/. Verification pages are not retried or bypassed.',
+    );
+  }
+
   if (!res.ok) {
     // DRF errors come back as JSON like {"detail":"..."}; surface that when present.
     let detail = text.slice(0, 300).trim();

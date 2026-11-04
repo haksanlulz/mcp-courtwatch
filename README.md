@@ -70,6 +70,8 @@ Sources:
 
 ## Install
 
+**Current access limitation (local verification, 2026-11-04):** anonymous searches may receive an authentication refusal or an HTML human-verification page instead of API results. Do not rely on anonymous access being available. Configure `COURTLISTENER_API_TOKEN` in your MCP client's server environment using your account's API credentials, subject to CourtListener's access rules, or search manually at [CourtListener](https://www.courtlistener.com/). See the provider's [current API documentation](https://www.courtlistener.com/help/api/). Verification pages now produce an actionable error and are neither retried nor bypassed. If a token was already sent, the error says so without calling it invalid or exposing it. Historical keyless examples below describe the dated observations, not a guarantee of current access.
+
 **Bundle (.mcpb).** For a client that installs MCP bundles, build one and open it. No JSON to edit, and the API token is an optional field in the install dialog:
 
 ```bash

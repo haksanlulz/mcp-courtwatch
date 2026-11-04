@@ -82,6 +82,12 @@ Check: `test/server.test.ts` (tagged `spec: records-not-advice`), asserted acros
 
 ## §6 Escape log
 
+### 2026-11-04 — Anonymous verification errors (gpt-6-astra)
+
+Goal: make refused anonymous access understandable without bypassing verification. HTML human-verification pages on HTTP 200/403/405/503 now produce one permanent error with token setup and manual-search options. When a token was sent, the message says so without blaming or exposing it. README distinguishes dated keyless examples from current access guarantees.
+
+Five regression cases failed before the fix. Final: **248 tests**, typecheck, build and `verify:pack` passed; the local tarball installs, initializes and lists all 11 tools. Live smoke: 11/12 passed on the first run, with `docket_lookup` timing out; that exact eviction/limit=3 lookup passed on a focused retry over the compiled stdio adapter, returning three records. No other failed/skipped live checks. Fresh anonymous compiled-stdio search returned HTTP 401 with token setup guidance; the previous HTTP 405 verification page was not bypassed. Anonymous bundle release gate remains **BLOCKED externally**, not claimed green by these error-handling tests. No push, publication or deployment.
+
 ### 2026-11-03 — Read and search long opinions (gpt-6-astra)
 
 `case_detail` with `type="opinion"` now accepts `offset`, `max_chars`, and literal case-insensitive `find`. It returns full normalized-text length, availability, continuation offsets, and next-match offsets, so text after the old 50,000-character cutoff remains reachable. Cluster requests refuse these options; offsets describe normalized UTF-16 text, never official citation pinpoints. Thirteen tests added, including seven capability checks that failed before implementation. Final: 243 tests, typecheck/build, 12 live smoke checks without skips, and compiled stdio reading past character 50,000 and finding a phrase in the 206,985-character Obergefell opinion. No new upstream endpoint or publication.
