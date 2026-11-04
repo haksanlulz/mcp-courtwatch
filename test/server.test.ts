@@ -716,6 +716,16 @@ describe("court_list", () => {
 });
 
 describe("judge_lookup", () => {
+  it("reports matches omitted by limit even when there is no next page", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 2, next: null, results: [
+      { id: 1, name_last: "Smith" }, { id: 2, name_last: "Smith" },
+    ] }));
+    const body = payload(await call("judge_lookup", { name_last: "Smith", limit: 1 }));
+    expect(body.returned).toBe(1);
+    expect(body.more_available).toBe(true);
+    expect(body.note).toMatch(/limit.*1.*2/);
+    expect(body.note).toMatch(/raise limit/i);
+  });
   it("assembles the name and counts positions", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(PEOPLE));
     const body = payload(await call("judge_lookup", { name_last: "Ginsburg" }));
@@ -1784,6 +1794,29 @@ describe("oral_argument_transcript", () => {
 });
 
 describe("oral_arguments transcript availability", () => {
+  it.each([3, 0, null, 99])("withholds a search snippet when checked status %s is unusable", async (stt_status) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ count: 1, next: null, results: [
+      { caseName: "A", id: 111, snippet: "Text from an unreliable transcript" },
+    ] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 111, stt_status }));
+    const body = payload(await call("oral_arguments", { q: "miranda", include_transcript_status: true }));
+    expect(body.results[0].snippet).toBeNull();
+    expect(body.results[0].snippet_note).toMatch(/withheld/i);
+  });
+
+  it("refuses a different audio record's status and retries the read after recovery", async () => {
+    fetchMock.mockImplementation(async (url: URL) => url.pathname.endsWith("/search/")
+      ? jsonResponse({ count: 1, next: null, results: [{ id: 111, snippet: "An excerpt" }] })
+      : jsonResponse({ id: 999, stt_status: 1 }));
+    const first = payload(await call("oral_arguments", { q: "miranda", include_transcript_status: true }));
+    expect(first.results[0].transcript_status).toBe("CHECK_FAILED");
+    expect(first.results[0].snippet).toBeNull();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 111, stt_status: 1 }));
+    const recovered = payload(await call("oral_arguments", { q: "miranda", include_transcript_status: true }));
+    expect(recovered.results[0].transcript_status).toBe("COMPLETE");
+    expect(recovered.results[0].snippet).toBe("An excerpt");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
   const OA_PAGE = {
     count: 18,
     next: null,
@@ -1980,7 +2013,7 @@ describe("a rejected token", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("a 401 with NO token attached is left as the plain upstream error", async () => {
+  it("a 401 with NO token attached explains how to configure access", async () => {
     delete process.env.COURTLISTENER_API_TOKEN;
     fetchMock.mockResolvedValue(
       textResponse(JSON.stringify({ detail: "Authentication credentials were not provided." }), {
@@ -1995,6 +2028,8 @@ describe("a rejected token", () => {
     expect(res.isError).toBe(true);
     expect(text).not.toMatch(/regenerate/i);
     expect(text).not.toMatch(/token WAS sent/i);
+    expect(text).toContain("Set COURTLISTENER_API_TOKEN");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("the POST path carries the same guidance", async () => {

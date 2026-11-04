@@ -384,6 +384,9 @@ async function readClResponse(
         ` Check COURTLISTENER_API_TOKEN for a copy/paste error (surrounding quotes, a trailing` +
         ` newline, or the word "Token" included in the value), and regenerate it from your` +
         ` CourtListener profile's API page if it is stale (${TOKEN_SIGNUP_URL}).`;
+    } else if (res.status === 401) {
+      message += ` This endpoint requires authentication. Set COURTLISTENER_API_TOKEN to your free ` +
+        `CourtListener profile token (${TOKEN_SIGNUP_URL}) and retry.`;
     }
     // A 5xx whose DRF detail says "review your query" MAY be CourtListener's
     // search parser refusing the query. It may equally be the Elasticsearch
@@ -2041,18 +2044,26 @@ async function judgeLookup(args: Row): Promise<unknown> {
     },
     { expectResults: source },
   );
-  const results = extractResults(json, source).slice(0, limit).map(normalizeJudge);
+  const page = extractResults(json, source);
+  const results = page.slice(0, limit).map(normalizeJudge);
   // This tool exposes no cursor and `count` arrives as the deferred ?count=on
   // URL, so without this flag a caller asking for 50 got `returned: 20` with
   // nothing saying more people match.
-  const moreAvailable = extractCursor((json as Row).next) != null;
+  const hasNextPage = extractCursor((json as Row).next) != null;
+  const dropped = page.length - results.length;
+  const moreAvailable = hasNextPage || dropped > 0;
+  const notes: string[] = [];
+  if (dropped > 0) {
+    notes.push(`limit kept ${results.length} of ${page.length} people on this page; raise limit to ${PEOPLE_PAGE_SIZE} to see the rest of this page.`);
+  }
+  if (hasNextPage) {
+    notes.push(`More people match this name than one /people/ page holds (${PEOPLE_PAGE_SIZE} rows, page_size is ignored upstream). returned is this page, never the total — narrow with name_first.`);
+  }
   return {
     query: { name_last: nameLast ?? null, name_first: nameFirst ?? null },
     returned: results.length,
     more_available: moreAvailable,
-    note: moreAvailable
-      ? `More people match this name than one /people/ page holds (${PEOPLE_PAGE_SIZE} rows, page_size is ignored upstream). returned is this page, never the total — narrow with name_first.`
-      : undefined,
+    note: notes.length ? notes.join(" ") : undefined,
     results,
   };
 }
@@ -2233,15 +2244,26 @@ async function oralArguments(args: Row): Promise<unknown> {
       const audioId = row.audio_id;
       if (typeof audioId !== "number") {
         row.transcript_status = "UNKNOWN_AUDIO_ID";
+        row.snippet = null;
+        row.snippet_note = "Snippet withheld: no audio id is available to check its transcription status.";
         continue;
       }
       try {
         // The narrowest possible read; `fields` is honoured on this endpoint.
-        const a = await clGet(`/audio/${audioId}/`, { fields: "id,stt_status" });
-        row.transcript_status = sttVerdict(num((a as Row).stt_status)).verdict;
+        const a = await clGet(`/audio/${audioId}/`, { fields: "id,stt_status" }, {
+          expectDetail: { id: audioId, source: `oral_arguments (/audio/${audioId}/)` },
+        });
+        const status = sttVerdict(num((a as Row).stt_status));
+        row.transcript_status = status.verdict;
+        if (!status.usable) {
+          row.snippet = null;
+          row.snippet_note = `Snippet withheld: ${status.meaning}`;
+        }
       } catch {
         // Never turn a failed check into an assertion of absence.
         row.transcript_status = "CHECK_FAILED";
+        row.snippet = null;
+        row.snippet_note = "Snippet withheld: the transcription status could not be verified.";
         checkFailures++;
       }
     }
