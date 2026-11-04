@@ -777,6 +777,81 @@ describe("judge_lookup", () => {
 });
 
 describe("case_detail", () => {
+  it("pages beyond the old 50000-character cutoff without losing text", async () => {
+    const full = "A".repeat(50000) + "The final holding.";
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...OPINION, plain_text: full }));
+    const first = payload(await call("case_detail", { id: OPINION.id, type: "opinion" }));
+    expect(first.text_chars).toBe(full.length);
+    expect(first.next_offset).toBe(50000);
+    const last = payload(await call("case_detail", { id: OPINION.id, type: "opinion", offset: first.next_offset }));
+    expect(first.text + last.text).toBe(full);
+    expect(last.next_offset).toBeNull();
+    expect(last.text_truncated).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds literal phrases beyond the first page and can advance to the next match", async () => {
+    const full = "A".repeat(51000) + "Due Process [a+b]. Later: due process [a+b].";
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...OPINION, plain_text: full }));
+    const args = { id: OPINION.id, type: "opinion", find: "due process [a+b]", max_chars: 20 };
+    const first = payload(await call("case_detail", args));
+    expect(first.text).toBe(full.slice(51000, 51020));
+    expect(first.find_result.match_offset).toBe(51000);
+    expect(first.find_result.next_match_offset).toBeGreaterThan(51000);
+    const last = payload(await call("case_detail", { ...args, offset: first.find_result.next_match_offset }));
+    expect(last.text).toBe("due process [a+b].");
+    expect(last.find_result.next_match_offset).toBeNull();
+  });
+
+  it("keeps Unicode search offsets anchored to the returned source text", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...OPINION, plain_text: "İ😀 Due Process" }));
+    const body = payload(await call("case_detail", { id: OPINION.id, type: "opinion", find: "due process" }));
+    expect(body.find_result.match_offset).toBe(4);
+    expect(body.text).toBe("Due Process");
+  });
+
+  it("reports a missing phrase without fabricating an excerpt", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(OPINION));
+    const body = payload(await call("case_detail", { id: OPINION.id, type: "opinion", find: "absent phrase" }));
+    expect(body.find_result.found).toBe(false);
+    expect(body.text).toBeNull();
+    expect(body.next_offset).toBeNull();
+    expect(body.text_available).toBe(true);
+  });
+
+  it("pages the same normalized HTML text it searches", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...OPINION, plain_text: "", html_with_citations: "<p>Alpha &amp; beta.</p><p>Holding affirmed.</p>" }));
+    const body = payload(await call("case_detail", { id: OPINION.id, type: "opinion", find: "holding" }));
+    expect(body.text).toBe("Holding affirmed.");
+    expect(body.text_source).toBe("html_with_citations");
+    expect(body.text_note).toContain("normalized");
+  });
+
+  it.each([{ offset: -1 }, { offset: true }, { offset: 0.5 }, { max_chars: 0 }, { max_chars: 50001 }, { find: " " }])(
+    "rejects invalid reading options before fetching: %j", async (options) => {
+      const result: any = await call("case_detail", { id: OPINION.id, type: "opinion", ...options });
+      expect(result.isError).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects opinion reading options on a cluster", async () => {
+    const result: any = await call("case_detail", { id: 9335501, max_chars: 100 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('type="opinion"');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes no text from an empty final page, and rejects offsets past the end", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...OPINION, plain_text: null, html_with_citations: null }));
+    const empty = payload(await call("case_detail", { id: OPINION.id, type: "opinion" }));
+    expect(empty.text_available).toBe(false);
+    expect(empty.text_chars).toBe(0);
+    expect(empty.next_offset).toBeNull();
+    const past: any = await call("case_detail", { id: OPINION.id, type: "opinion", offset: 1 });
+    expect(past.isError).toBe(true);
+  });
+
   it("fetches a cluster with the token, formatting citations and sub-opinion ids", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(CLUSTER));
     const body = payload(await call("case_detail", { id: 9335501 }));

@@ -178,6 +178,18 @@ async function main(): Promise<void> {
     need(Array.isArray(body.sub_opinion_ids), "sub_opinion_ids should be an array");
   });
 
+  await run("case_detail opinion paging and phrase search", async () => {
+    const args = { id: 2812209, type: "opinion", max_chars: 200 };
+    const first = parse(await client.callTool({ name: "case_detail", arguments: args }));
+    need(first.text_available === true && first.text_chars > 200, "expected Obergefell's full opinion text");
+    need(first.text.length === 200 && first.next_offset === 200, "the first page must have a continuation");
+    const next = parse(await client.callTool({ name: "case_detail", arguments: { ...args, offset: first.next_offset } }));
+    need(next.offset === 200 && next.text.length > 0, "the continuation must return the next part");
+    const found = parse(await client.callTool({ name: "case_detail", arguments: { ...args, find: first.text.slice(0, 20) } }));
+    need(found.find_result.found === true && found.find_result.match_offset === 0, "a literal phrase from the opinion must resolve back to its text");
+    console.log(`     -> ${first.text_chars} characters; paging and literal search round-trip`);
+  });
+
   await run("cited_by", async () => {
     // Obergefell's majority opinion (id 2812209): a heavily cited modern case.
     const body = parse(await client.callTool({ name: "cited_by", arguments: { opinion_id: 2812209 } }));

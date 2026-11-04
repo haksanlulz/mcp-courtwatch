@@ -82,6 +82,10 @@ Check: `test/server.test.ts` (tagged `spec: records-not-advice`), asserted acros
 
 ## §6 Escape log
 
+### 2026-11-03 — Read and search long opinions (gpt-6-astra)
+
+`case_detail` with `type="opinion"` now accepts `offset`, `max_chars`, and literal case-insensitive `find`. It returns full normalized-text length, availability, continuation offsets, and next-match offsets, so text after the old 50,000-character cutoff remains reachable. Cluster requests refuse these options; offsets describe normalized UTF-16 text, never official citation pinpoints. Thirteen tests added, including seven capability checks that failed before implementation. Final: 243 tests, typecheck/build, 12 live smoke checks without skips, and compiled stdio reading past character 50,000 and finding a phrase in the 206,985-character Obergefell opinion. No new upstream endpoint or publication.
+
 ### 2026-11-03 — result completeness and transcript provenance (gpt-6-astra)
 
 `judge_lookup` now counts rows removed by `limit` when reporting `more_available`, even on the last upstream page. Opt-in transcript checks validate the returned audio id before caching; failed, unknown, incomplete, or mismatched transcriptions withhold the search snippet and explain why. A recovered read can succeed because an invalid status response was never cached. An anonymous 401 now names the token setup step; a live `/people/` request returned 401 without a token and succeeded with one, so the README no longer promises anonymous judge access.

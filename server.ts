@@ -782,7 +782,7 @@ function stripTags(html: string): string {
 }
 
 /** Choose the best available opinion body, preferring plain text, then HTML/XML. */
-function bestOpinionText(o: Row): { text: string | null; source: string | null; truncated: boolean } {
+function bestOpinionText(o: Row): { text: string | null; source: string | null } {
   const plain = str(o.plain_text);
   let text: string | null = null;
   let source: string | null = null;
@@ -799,9 +799,7 @@ function bestOpinionText(o: Row): { text: string | null; source: string | null; 
       }
     }
   }
-  if (text == null) return { text: null, source: null, truncated: false };
-  if (text.length > TEXT_CAP) return { text: text.slice(0, TEXT_CAP), source, truncated: true };
-  return { text, source, truncated: false };
+  return { text, source };
 }
 
 // --- per-object normalizers ------------------------------------------------
@@ -1110,8 +1108,30 @@ function normalizeClusterDetail(c: Row): Record<string, unknown> {
 }
 
 /** Normalize an /opinions/{id}/ detail object (one opinion's text + metadata). */
-function normalizeOpinionDetail(o: Row): Record<string, unknown> {
+function normalizeOpinionDetail(o: Row, offset: number, maxChars: number, find?: string): Record<string, unknown> {
   const body = bestOpinionText(o);
+  const full = body.text ?? "";
+  if (offset > full.length) throw new Error(`offset ${offset} is past the end of this opinion (${full.length} characters).`);
+  let start = offset;
+  let findResult: Record<string, unknown> | undefined;
+  let found = true;
+  if (find !== undefined) {
+    // Search the original string: lowercasing Unicode can change its length and
+    // move offsets. Escape every regex metacharacter so find is a literal phrase.
+    const pattern = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+    pattern.lastIndex = offset;
+    const match = pattern.exec(full);
+    found = match !== null;
+    if (match) start = match.index;
+    findResult = {
+      phrase: find, found, match_offset: match?.index ?? null,
+      match_length: match?.[0].length ?? null,
+      next_match_offset: match ? pattern.exec(full)?.index ?? null : null,
+    };
+  }
+  const page = body.text !== null && found ? full.slice(start, start + maxChars) : null;
+  const end = start + (page?.length ?? 0);
+  const truncated = page !== null && end < full.length;
   return {
     type: "opinion",
     id: num(o.id),
@@ -1121,9 +1141,16 @@ function normalizeOpinionDetail(o: Row): Record<string, unknown> {
     page_count: num(o.page_count),
     download_url: str(o.download_url),
     cluster_url: str(o.cluster),
-    text: body.text,
+    text: page,
     text_source: body.source,
-    text_truncated: body.truncated,
+    text_available: body.text !== null,
+    text_chars: full.length,
+    offset: start,
+    max_chars: maxChars,
+    next_offset: truncated ? end : null,
+    text_truncated: truncated,
+    find_result: findResult,
+    text_note: "Offsets count UTF-16 code units in the normalized text returned by this tool, not PDF pages or official citation pinpoints. Pass next_offset to continue reading, or find_result.next_match_offset with the same find phrase for the next match.",
     absolute_url: fullUrl(o.absolute_url),
   };
 }
@@ -1465,7 +1492,7 @@ const TOOLS: Tool[] = [
     name: "case_detail",
     description:
       "Fetch a full case by id: a cluster (the case: name, citations, date, judges, and its opinion ids) or a " +
-      "single opinion (its full text). Requires COURTLISTENER_API_TOKEN (these endpoints are authentication-only). " +
+      "single opinion (paged text, with optional literal phrase search across the whole document). Requires COURTLISTENER_API_TOKEN (these endpoints are authentication-only). " +
       "Use the cluster_id from opinion_search results.",
     inputSchema: {
       type: "object",
@@ -1476,6 +1503,9 @@ const TOOLS: Tool[] = [
           enum: ["cluster", "opinion"],
           description: 'Which resource `id` refers to (default "cluster"). A cluster is the case; an opinion is one document within it.',
         },
+        offset: { type: "integer", minimum: 0, description: "Opinion only: normalized-text character offset, default 0. Use next_offset to continue reading or next_match_offset to find the next phrase." },
+        max_chars: { type: "integer", minimum: 1, maximum: TEXT_CAP, description: `Opinion only: characters per page (default and maximum ${TEXT_CAP}).` },
+        find: { type: "string", minLength: 1, maxLength: 500, description: "Opinion only: literal case-insensitive phrase to find at or after offset, including beyond the first page. Returns text beginning at the match and the next match offset." },
       },
       required: ["id"],
       additionalProperties: false,
@@ -1887,6 +1917,18 @@ async function caseDetail(args: Row): Promise<unknown> {
   if (kind !== "cluster" && kind !== "opinion") {
     throw new Error('type must be "cluster" or "opinion".');
   }
+  if (kind === "cluster" && ["offset", "max_chars", "find"].some((key) => args[key] !== undefined)) {
+    throw new Error('offset, max_chars, and find require type="opinion"; use a sub_opinion_id from the cluster.');
+  }
+  const offset = args.offset === undefined ? 0 : args.offset;
+  const maxChars = args.max_chars === undefined ? TEXT_CAP : args.max_chars;
+  if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer.");
+  if (typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > TEXT_CAP) throw new Error(`max_chars must be an integer from 1 to ${TEXT_CAP}.`);
+  let find: string | undefined;
+  if (args.find !== undefined) {
+    if (typeof args.find !== "string" || !args.find.trim() || args.find.length > 500) throw new Error("find must be a non-blank literal phrase of at most 500 characters.");
+    find = args.find;
+  }
 
   // /clusters/{id}/ and /opinions/{id}/ are authentication-only: requireAuth makes
   // clGet throw the token() setup error before any network call when unset.
@@ -1895,7 +1937,7 @@ async function caseDetail(args: Row): Promise<unknown> {
   if (kind === "opinion") {
     const source = `case_detail (/opinions/${id}/)`;
     const o = await clGet(`/opinions/${id}/`, {}, { requireAuth: true, expectDetail: { id, source } });
-    return normalizeOpinionDetail(expectDetail(o, id, source));
+    return normalizeOpinionDetail(expectDetail(o, id, source), offset, maxChars, find);
   }
   const source = `case_detail (/clusters/${id}/)`;
   const c = await clGet(`/clusters/${id}/`, {}, { requireAuth: true, expectDetail: { id, source } });
