@@ -44,7 +44,7 @@ function skip(reason: string): never {
 }
 
 function parse(result: any) {
-  const text = String(result?.content?.[0]?.text ?? "");
+  const text = String(result?.content?.[1]?.text ?? "");
   // An isError result carries a plain message, not JSON. Surface it: parsing it
   // blind turns every real failure into "Unexpected token 'E'".
   if (result?.isError) throw new Error(text);

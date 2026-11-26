@@ -317,7 +317,7 @@ async function call(name: string, args: Record<string, unknown>) {
 }
 
 function payload(result: any) {
-  return JSON.parse(result.content[0].text);
+  return JSON.parse(result.content[1].text);
 }
 
 // The response cache lives for the process; without this a value cached by one
@@ -472,26 +472,26 @@ describe("opinion_search", () => {
   it("requires q (error, no network call)", async () => {
     const res: any = await call("opinion_search", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/q is required/i);
+    expect(res.content[1].text).toMatch(/q is required/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown argument with a near-miss, before any network call", async () => {
     const res: any = await call("opinion_search", { q: "x", filed_afer: "2020-01-01" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/opinion_search does not accept "filed_afer" \(did you mean "filed_after"\?\)/);
-    expect(res.content[0].text).toMatch(/Nothing was queried/);
+    expect(res.content[1].text).toMatch(/opinion_search does not accept "filed_afer" \(did you mean "filed_after"\?\)/);
+    expect(res.content[1].text).toMatch(/Nothing was queried/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid order_by and a malformed date without calling the API", async () => {
     const bad1: any = await call("opinion_search", { q: "x", order_by: "cheapest" });
     expect(bad1.isError).toBe(true);
-    expect(bad1.content[0].text).toMatch(/order_by/i);
+    expect(bad1.content[1].text).toMatch(/order_by/i);
 
     const bad2: any = await call("opinion_search", { q: "x", filed_after: "01-01-2020" });
     expect(bad2.isError).toBe(true);
-    expect(bad2.content[0].text).toMatch(/YYYY-MM-DD/);
+    expect(bad2.content[1].text).toMatch(/YYYY-MM-DD/);
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -508,7 +508,7 @@ describe("opinion_search", () => {
     for (const value of ["2026-13-45", "2026-00-10", "2026-02-30", "2026-04-31", "2026-11-00"]) {
       const res: any = await call(tool, { q: "x", [field]: value });
       expect(res.isError, `${tool} ${field}=${value} was accepted`).toBe(true);
-      expect(res.content[0].text).toMatch(/must be a real ISO date/i);
+      expect(res.content[1].text).toMatch(/must be a real ISO date/i);
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -539,7 +539,7 @@ describe("opinion_search", () => {
       ] as Array<[string, Record<string, unknown>]>) {
         const res: any = await call(tool, { ...args, order_by: orderKey });
         expect(res.isError, `${tool} accepted order_by=${orderKey}`).toBe(true);
-        expect(res.content[0].text, tool).toMatch(/order_by must be one of/);
+        expect(res.content[1].text, tool).toMatch(/order_by must be one of/);
         expect(fetchMock, `${tool} sent a request for order_by=${orderKey}`).not.toHaveBeenCalled();
       }
     },
@@ -558,7 +558,7 @@ describe("opinion_search", () => {
     fetchMock.mockResolvedValue(textResponse("upstream boom", { ok: false, status: 500 }));
     const res500: any = await call("opinion_search", { q: "x" });
     expect(res500.isError).toBe(true);
-    expect(res500.content[0].text).toContain("500");
+    expect(res500.content[1].text).toContain("500");
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -567,7 +567,7 @@ describe("opinion_search", () => {
     fetchMock.mockResolvedValue(textResponse("<html>maintenance</html>"));
     const resHtml: any = await call("opinion_search", { q: "x" });
     expect(resHtml.isError).toBe(true);
-    expect(resHtml.content[0].text).toContain("non-JSON");
+    expect(resHtml.content[1].text).toContain("non-JSON");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -606,7 +606,7 @@ describe("opinion_search", () => {
     fetchMock.mockResolvedValue(textResponse(JSON.stringify({ detail }), { ok: false, status: 429 }));
     const res: any = await call("opinion_search", { q: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("throttled");
+    expect(res.content[1].text).toContain("throttled");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -657,7 +657,7 @@ describe("docket_lookup", () => {
   it("requires q or docket_number (error, no network call)", async () => {
     const res: any = await call("docket_lookup", { court: "nysd" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/at least one/i);
+    expect(res.content[1].text).toMatch(/at least one/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -741,7 +741,7 @@ describe("judge_lookup", () => {
   it("requires a name (error, no network call)", async () => {
     const res: any = await call("judge_lookup", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/name_last or name_first/i);
+    expect(res.content[1].text).toMatch(/name_last or name_first/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -838,7 +838,7 @@ describe("case_detail", () => {
   it("rejects opinion reading options on a cluster", async () => {
     const result: any = await call("case_detail", { id: 9335501, max_chars: 100 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('type="opinion"');
+    expect(result.content[1].text).toContain('type="opinion"');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -884,14 +884,14 @@ describe("case_detail", () => {
     delete process.env.COURTLISTENER_API_TOKEN;
     const res: any = await call("case_detail", { id: 9335501 });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(res.content[1].text).toContain("COURTLISTENER_API_TOKEN");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid type", async () => {
     const res: any = await call("case_detail", { id: 1, type: "docket" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/cluster.*opinion/i);
+    expect(res.content[1].text).toMatch(/cluster.*opinion/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -1003,23 +1003,23 @@ describe("citation_lookup", () => {
   it("rejects oversized text before any network call instead of truncating", async () => {
     const res: any = await call("citation_lookup", { text: "x".repeat(64_001) });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("64000");
-    expect(res.content[0].text).toMatch(/split/i);
-    expect(res.content[0].text).toMatch(/nothing was sent/i);
+    expect(res.content[1].text).toContain("64000");
+    expect(res.content[1].text).toMatch(/split/i);
+    expect(res.content[1].text).toMatch(/nothing was sent/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("requires text (error, no network call)", async () => {
     const res: any = await call("citation_lookup", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(res.content[1].text).toMatch(/text is required/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each(["   ", "\n\t \n"])("still refuses whitespace-only text (%j)", async (text) => {
     const res: any = await call("citation_lookup", { text });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(res.content[1].text).toMatch(/text is required/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1033,7 +1033,7 @@ describe("citation_lookup", () => {
   ])("refuses text made only of characters the request strips (%s)", async (_label, text) => {
     const res: any = await call("citation_lookup", { text });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/text is required/i);
+    expect(res.content[1].text).toMatch(/text is required/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1113,7 +1113,7 @@ describe("citation_lookup", () => {
     delete process.env.COURTLISTENER_API_TOKEN;
     const res: any = await call("citation_lookup", { text: "410 U.S. 113" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(res.content[1].text).toContain("COURTLISTENER_API_TOKEN");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1238,7 +1238,7 @@ describe("case_authorities", () => {
     delete process.env.COURTLISTENER_API_TOKEN;
     const res = await call("case_authorities", { opinion_id: 5 });
     expect((res as any).isError).toBe(true);
-    expect((res as any).content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect((res as any).content[1].text).toContain("COURTLISTENER_API_TOKEN");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1511,7 +1511,7 @@ describe("docket_lookup fielded docket number", () => {
     async (raw) => {
       const res: any = await call("docket_lookup", { docket_number: raw });
       expect(res.isError).toBe(true);
-      expect(res.content[0].text).toMatch(/nothing is left to match/i);
+      expect(res.content[1].text).toMatch(/nothing is left to match/i);
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
@@ -1584,14 +1584,14 @@ describe("free-text q never leaves with a dangling escape", () => {
   ])("refuses a %s query that cleans away to nothing, which would search everything", async (tool, args) => {
     const res: any = await call(tool, args);
     expect(res.isError, `${tool} sent an empty q`).toBe(true);
-    expect(res.content[0].text).toMatch(/nothing is left to search for/i);
+    expect(res.content[1].text).toMatch(/nothing is left to search for/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses a docket_lookup free-text q that empties even when a docket_number would carry it", async () => {
     const res: any = await call("docket_lookup", { q: "\\", docket_number: "1:20-cv-03590" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/nothing is left to search for/i);
+    expect(res.content[1].text).toMatch(/nothing is left to search for/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -1631,7 +1631,7 @@ describe("a query CourtListener cannot parse is refused once, not three times", 
   it("tells the caller it is their query, and which characters to look at", async () => {
     fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
     const res: any = await call("opinion_search", { q: "eviction~~" });
-    const text = String(res.content[0].text);
+    const text = String(res.content[1].text);
     expect(text).toMatch(/could not parse this query/i);
     expect(text).toMatch(/not retried/i);
     expect(text).toMatch(/unbalanced quote/i);
@@ -1687,7 +1687,7 @@ describe("a query CourtListener cannot parse is refused once, not three times", 
   it("does not blame the caller's query when the query carries no operator character", async () => {
     fetchMock.mockResolvedValue(textResponse(PARSE_REFUSAL, { ok: false, status: 500 }));
     const res: any = await call("opinion_search", { q: "eviction" });
-    expect(String(res.content[0].text)).not.toMatch(/could not parse this query/i);
+    expect(String(res.content[1].text)).not.toMatch(/could not parse this query/i);
   });
 });
 
@@ -1846,7 +1846,7 @@ describe("oral_argument_transcript", () => {
   it.each([0, -5, 1.5, "abc"])("rejects audio_id %s before any network call", async (audio_id) => {
     const res: any = await call("oral_argument_transcript", { audio_id });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/audio_id/i);
+    expect(res.content[1].text).toMatch(/audio_id/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1854,7 +1854,7 @@ describe("oral_argument_transcript", () => {
     for (const offset of [-1, 2.5]) {
       const res: any = await call("oral_argument_transcript", { audio_id: 5, offset });
       expect(res.isError).toBe(true);
-      expect(res.content[0].text).toMatch(/offset/i);
+      expect(res.content[1].text).toMatch(/offset/i);
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -1863,8 +1863,8 @@ describe("oral_argument_transcript", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(audioRecord()));
     const res: any = await call("oral_argument_transcript", { audio_id: 106247, offset: 500 });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("past the end");
-    expect(res.content[0].text).toContain("10 characters");
+    expect(res.content[1].text).toContain("past the end");
+    expect(res.content[1].text).toContain("10 characters");
   });
 });
 
@@ -1964,7 +1964,7 @@ describe("an unexpected response envelope", () => {
     const res: any = await call("opinion_search", { q: "eviction" });
 
     expect(res.isError).toBe(true);
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
     expect(text).toMatch(/unexpected (envelope|body)/i);
     expect(text).toContain("opinion_search");
     expect(text).not.toMatch(/returned.*0/);
@@ -1973,7 +1973,7 @@ describe("an unexpected response envelope", () => {
   it("names the keys it actually received, so the change is diagnosable", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ count: 3, items: [], cursor: null }));
     const res: any = await call("docket_lookup", { q: "eviction" });
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
     expect(text).toContain("count, items, cursor");
     expect(text).toContain("docket_lookup");
   });
@@ -2001,7 +2001,7 @@ describe("an unexpected response envelope", () => {
       fetchMock.mockResolvedValue(jsonResponse({ detail: "ok" }));
       const res: any = await call(tool, args);
       expect(res.isError, `${tool} must refuse a body with no results array`).toBe(true);
-      expect(res.content[0].text, tool).toContain(tool);
+      expect(res.content[1].text, tool).toContain(tool);
     }
   });
 
@@ -2047,18 +2047,18 @@ describe("an unexpected response envelope", () => {
     );
     const res: any = await call("citation_lookup", { text: "See Roe v. Wade, 410 U.S. 113 (1973)." });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/unexpected body for citation_lookup/i);
+    expect(res.content[1].text).toMatch(/unexpected body for citation_lookup/i);
     // The property that matters is that no success payload is produced: the
     // old coercion answered with citations_checked 0 / found 0 / results [],
     // byte-identical to a document that cites nothing.
-    expect(res.content[0].text).not.toMatch(/citations_checked/);
+    expect(res.content[1].text).not.toMatch(/citations_checked/);
   });
 
   it("citation_lookup refuses a null body rather than reporting a clean document", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(null));
     const res: any = await call("citation_lookup", { text: "See Roe v. Wade, 410 U.S. 113 (1973)." });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/got null/i);
+    expect(res.content[1].text).toMatch(/got null/i);
   });
 });
 
@@ -2068,18 +2068,18 @@ describe("a rejected token", () => {
     fetchMock.mockResolvedValue(textResponse('<!doctype html><html><title>Human Verification</title><p>Please verify you are human</p></html>', {ok:status===200,status}));
     const res:any=await call('opinion_search',{q:'miranda'});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/human verification/i);
-    expect(res.content[0].text).toContain('COURTLISTENER_API_TOKEN');
-    expect(res.content[0].text).toContain('https://www.courtlistener.com/');
-    expect(res.content[0].text).not.toContain('<html>');
+    expect(res.content[1].text).toMatch(/human verification/i);
+    expect(res.content[1].text).toContain('COURTLISTENER_API_TOKEN');
+    expect(res.content[1].text).toContain('https://www.courtlistener.com/');
+    expect(res.content[1].text).not.toContain('<html>');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('a verification page with a token offers manual access without claiming the token is invalid', async()=>{
     fetchMock.mockResolvedValue(textResponse('<html>Human verification</html>',{ok:false,status:405}));
     const res:any=await call('opinion_search',{q:'miranda'});
-    expect(res.content[0].text).toMatch(/token was already sent/i);
-    expect(res.content[0].text).not.toMatch(/invalid token/i);
-    expect(res.content[0].text).not.toContain('test-token');
+    expect(res.content[1].text).toMatch(/token was already sent/i);
+    expect(res.content[1].text).not.toMatch(/invalid token/i);
+    expect(res.content[1].text).not.toContain('test-token');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   // token() writes careful setup guidance when COURTLISTENER_API_TOKEN is
@@ -2093,7 +2093,7 @@ describe("a rejected token", () => {
     );
 
     const res: any = await call("opinion_search", { q: "miranda" });
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
 
     expect(res.isError).toBe(true);
     expect(text).toContain("401");
@@ -2117,7 +2117,7 @@ describe("a rejected token", () => {
     );
 
     const res: any = await call("opinion_search", { q: "miranda" });
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
 
     expect(res.isError).toBe(true);
     expect(text).not.toMatch(/regenerate/i);
@@ -2133,7 +2133,7 @@ describe("a rejected token", () => {
     );
 
     const res: any = await call("citation_lookup", { text: "410 U.S. 113" });
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
 
     expect(lastInit().method).toBe("POST");
     expect(text).toContain("COURTLISTENER_API_TOKEN");
@@ -2167,7 +2167,7 @@ describe("an unsubstituted user_config placeholder is not a token", () => {
     const res: any = await call("case_detail", { id: 109881 });
 
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("COURTLISTENER_API_TOKEN");
+    expect(res.content[1].text).toContain("COURTLISTENER_API_TOKEN");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -2203,7 +2203,7 @@ describe("positive-integer id validation", () => {
       fetchMock.mockClear();
       const res: any = await call(tool, { [field]: bad });
       expect(res.isError, `${tool} accepted ${field}=${JSON.stringify(bad)}`).toBe(true);
-      expect(res.content[0].text, `${tool} ${field}=${JSON.stringify(bad)}`).toMatch(/positive/i);
+      expect(res.content[1].text, `${tool} ${field}=${JSON.stringify(bad)}`).toMatch(/positive/i);
       expect(fetchMock, `${tool} sent a request for ${field}=${JSON.stringify(bad)}`).not.toHaveBeenCalled();
     }
   });
@@ -2237,28 +2237,28 @@ describe("a detail endpoint must answer with the record that was asked for", () 
     fetchMock.mockResolvedValueOnce(jsonResponse(body));
     const res: any = await call("case_detail", { id: 5 });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+    expect(res.content[1].text).toMatch(/expected the record with id 5/i);
   });
 
   it.each(BAD_BODIES)("case_detail (opinion) refuses %s", async (_label, body) => {
     fetchMock.mockResolvedValueOnce(jsonResponse(body));
     const res: any = await call("case_detail", { id: 5, type: "opinion" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+    expect(res.content[1].text).toMatch(/expected the record with id 5/i);
   });
 
   it.each(BAD_BODIES)("oral_argument_transcript refuses %s", async (_label, body) => {
     fetchMock.mockResolvedValueOnce(jsonResponse(body));
     const res: any = await call("oral_argument_transcript", { audio_id: 5 });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/expected the record with id 5/i);
+    expect(res.content[1].text).toMatch(/expected the record with id 5/i);
   });
 
   it("a null body is named as null, not as a raw property-access crash", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(null));
     const res: any = await call("oral_argument_transcript", { audio_id: 5 });
-    expect(res.content[0].text).toMatch(/got null/i);
-    expect(res.content[0].text).not.toMatch(/Cannot read properties/i);
+    expect(res.content[1].text).toMatch(/got null/i);
+    expect(res.content[1].text).not.toMatch(/Cannot read properties/i);
   });
 
   it("the real records still pass — the check must not refuse a good body", async () => {

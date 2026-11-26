@@ -33,7 +33,7 @@ async function freshClient(): Promise<Client> {
 }
 
 function payload(result: any) {
-  return JSON.parse(result.content[0].text);
+  return JSON.parse(result.content[1].text);
 }
 
 /** Every stderr line this module wrote, joined. */
@@ -136,7 +136,7 @@ describe("non-Error throws", () => {
     const res: any = await client.callTool({ name: "opinion_search", arguments: { q: "x" } });
 
     expect(res.isError).toBe(true);
-    const text = res.content[0].text as string;
+    const text = res.content[1].text as string;
     expect(text).not.toBe("Error: undefined");
     expect(text).toContain("opinion_search");
     expect(text).toContain("non-Error value");

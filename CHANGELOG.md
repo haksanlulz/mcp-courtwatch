@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.0 — prepared locally, 2026-11-26
+
+**Breaking: every tool result now opens with a fixed label block.** `content[0]` is the text `[UNTRUSTED THIRD-PARTY CONTENT] ...`, saying the next block came from the upstream source and is data, never instructions; the data that used to be `content[0]` is now `content[1]`, unchanged. A program that parses results should skip the block whose text starts with `[UNTRUSTED THIRD-PARTY CONTENT]`. Every tool also declares MCP tool annotations (read-only, non-destructive, idempotent, open world).
+
 ## 1.3.0 — prepared locally, 2026-11-04
 
 Add opinion text paging, literal phrase search and stable normalized-text offsets. The separate local Civic Workbench adds highlighted contexts, saved passages, notes and reading-list exports.
