@@ -198,6 +198,13 @@ const ORDER_BY: Record<string, string> = {
 function rawToken(): string | null {
   const t = process.env.COURTLISTENER_API_TOKEN?.trim();
   if (!t || /^\$\{[^}]*\}$/.test(t)) return null;
+  // Node's fetch refuses a header value holding a line break and quotes the whole value in its error,
+  // which reaches the model (MCP security audit 2026-11-25). Refuse it here, never quoting it.
+  if (!/^[\x21-\x7e]+$/.test(t)) {
+    throw new Error(
+      "COURTLISTENER_API_TOKEN holds a character a request header cannot carry (a space, line break or control character). Set it again with the token alone.",
+    );
+  }
   return t;
 }
 

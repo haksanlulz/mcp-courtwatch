@@ -6,6 +6,8 @@
 
 `court_list` with `q` reads at most `COURTWATCH_COURT_WALK_PAGES` pages of the courts table (default 20, at most 200) instead of up to 200, and adds `complete`. A rate limit partway through the walk returns the courts already read, marked incomplete, instead of failing. Before this, one name search could spend the whole hourly ceiling (50/hour) and return nothing.
 
+`COURTLISTENER_API_TOKEN` holding a space, line break or control character is refused with a message that names the variable and never quotes it. Before this, Node's fetch rejected the header and its error, which quotes the whole value, was returned to the model.
+
 ## 1.3.0 — prepared locally, 2026-11-04
 
 Add opinion text paging, literal phrase search and stable normalized-text offsets. The separate local Civic Workbench adds highlighted contexts, saved passages, notes and reading-list exports.

@@ -2430,3 +2430,25 @@ describe("response cache", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(after);
   });
 });
+
+// MCP security audit 2026-11-25, the fairrent finding found here too (2026-11-26): Node's fetch refuses a
+// header value holding a line break and quotes the whole value in its error, which reaches the model.
+// The stub builds real Headers, so it fails exactly as fetch does.
+describe("a token a header cannot carry", () => {
+  it.each(["SECRET-TOKEN-123\r\nX: y", "SECRET\tTOKEN-123", "SECRET TOKEN-123"])(
+    "RED LEG: is refused without quoting it (%j)",
+    async (bad) => {
+      process.env.COURTLISTENER_API_TOKEN = bad;
+      fetchMock.mockImplementation(async (_url: unknown, init: any) => {
+        new Headers(init?.headers);
+        return jsonResponse(COURTS);
+      });
+      const r: any = await call("court_list", { jurisdiction: "F" });
+      const text = r.content.map((c: any) => c.text).join("\n");
+      expect(r.isError).toBe(true);
+      expect(text).not.toMatch(/TOKEN-123/);
+      expect(text).toMatch(/COURTLISTENER_API_TOKEN/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+});
