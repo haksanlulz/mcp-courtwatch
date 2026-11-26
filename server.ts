@@ -107,6 +107,13 @@ const PEOPLE_PAGE_SIZE = 20;
  * above that so every court is reachable without an unbounded loop.
  */
 const MAX_COURT_PAGES = 200;
+/**
+ * Pages one name-filtered court_list call may walk (MCP security audit 2026-11-25). The account
+ * ceilings are 50/hour and 125/day (README, measured 2026-09-14), so a 168-page walk spent the hour
+ * and failed with nothing. Default 20 (about 400 courts); an account with a higher ceiling raises it,
+ * up to MAX_COURT_PAGES, and a complete walk is cached for a day.
+ */
+const COURT_WALK_PAGES = Math.min(envInt("COURTWATCH_COURT_WALK_PAGES", 20, 1), MAX_COURT_PAGES);
 /** Cap on opinion full-text length returned by case_detail (chars). */
 const TEXT_CAP = 50000;
 /**
@@ -1855,21 +1862,32 @@ let courtCache: { rows: Row[]; at: number } | null = null;
 async function fetchCourts(
   jurisdiction: string | undefined,
   stopAt: number,
-): Promise<{ rows: Row[]; complete: boolean }> {
+): Promise<{ rows: Row[]; complete: boolean; rateLimited: boolean }> {
   // Only a COMPLETE walk is ever cached (see the write below), so a cache hit
   // is complete by construction.
   if (!jurisdiction && courtCache && Date.now() - courtCache.at < COURT_CACHE_TTL_MS) {
-    return { rows: courtCache.rows, complete: true };
+    return { rows: courtCache.rows, complete: true, rateLimited: false };
   }
   const all: Row[] = [];
   let complete = false;
-  for (let page = 1; page <= MAX_COURT_PAGES; page++) {
+  let rateLimited = false;
+  for (let page = 1; page <= COURT_WALK_PAGES; page++) {
     const source = "court_list (/courts/)";
-    const json = await clGet(
-      "/courts/",
-      { jurisdiction: jurisdiction ?? undefined, page },
-      { expectResults: source },
-    );
+    let json: unknown;
+    try {
+      json = await clGet(
+        "/courts/",
+        { jurisdiction: jurisdiction ?? undefined, page },
+        { expectResults: source },
+      );
+    } catch (e) {
+      // A ceiling hit partway through keeps what was read; on the first page there is nothing to keep.
+      if (e instanceof HttpError && e.status === 429 && all.length > 0) {
+        rateLimited = true;
+        break;
+      }
+      throw e;
+    }
     all.push(...extractResults(json, source));
     const hasNext = str((json as Row).next) != null;
     if (!hasNext) {
@@ -1879,7 +1897,7 @@ async function fetchCourts(
     if (all.length >= stopAt) break;
   }
   if (!jurisdiction && complete) courtCache = { rows: all, at: Date.now() };
-  return { rows: all, complete };
+  return { rows: all, complete, rateLimited };
 }
 
 async function courtList(args: Row): Promise<unknown> {
@@ -1890,7 +1908,7 @@ async function courtList(args: Row): Promise<unknown> {
   // With a name filter we must scan the whole table (server ignores page_size),
   // or common courts past the first page are silently missed. Without one, we
   // only need enough pages to satisfy `limit`.
-  const { rows, complete } = await fetchCourts(jurisdiction ?? undefined, nameFilter ? Infinity : limit);
+  const { rows, complete, rateLimited } = await fetchCourts(jurisdiction ?? undefined, nameFilter ? Infinity : limit);
 
   let courts = rows.map(normalizeCourt);
   if (nameFilter) {
@@ -1904,13 +1922,14 @@ async function courtList(args: Row): Promise<unknown> {
   return {
     query: { jurisdiction: jurisdiction ?? null, q: str(args.q) ?? null },
     returned: courts.length,
+    ...(nameFilter ? { complete } : {}),
     // The walk can stop at MAX_COURT_PAGES on a table that only grows, and the
     // note used to claim the full table either way — so past the cap the filter
     // would run over a prefix while the payload said it had searched all of it.
     note: nameFilter
       ? complete
         ? "The q filter is applied across the full courts table, paged server-side; scope by jurisdiction to page less."
-        : `The walk stopped at the ${MAX_COURT_PAGES}-page safety cap, so this filter ran over the first ${rows.length} courts only — a court past that point cannot appear here even if it matches. Scope by jurisdiction.`
+        : `${rateLimited ? "CourtListener's rate limit stopped the walk" : `The walk stopped after ${COURT_WALK_PAGES} pages (COURTWATCH_COURT_WALK_PAGES)`}, so this filter ran over the first ${rows.length} courts only — a court past that point cannot appear here even if it matches. Scope by jurisdiction.`
       : undefined,
     courts,
   };

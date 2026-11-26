@@ -695,9 +695,10 @@ describe("court_list", () => {
     expect(String(body.note)).toMatch(/full courts table/i);
   });
 
-  // The walk stops at MAX_COURT_PAGES (200) on a table that only grows. Past
-  // the cap the filter runs over a PREFIX, and the note claimed the full table
-  // either way.
+  // MCP security audit 2026-11-25 (lower-severity): the walk ran up to 200 pages for one name filter,
+  // against account ceilings of 50/hour and 125/day (README, measured 2026-09-14): one call spent the hour
+  // and failed with nothing. It now stops at COURTWATCH_COURT_WALK_PAGES (default 20) and says so.
+  // Past the cap the filter runs over a PREFIX, and the note claimed the full table either way.
   it("says so when the page cap stopped the walk, instead of claiming the full table", async () => {
     // Every page reports a next, so the walk runs to the cap and never completes.
     fetchMock.mockResolvedValue(
@@ -708,9 +709,26 @@ describe("court_list", () => {
       }),
     );
     const body = payload(await call("court_list", { q: "no-such-court" }));
-    expect(fetchMock).toHaveBeenCalledTimes(200);
-    expect(String(body.note)).toMatch(/safety cap/i);
+    expect(fetchMock).toHaveBeenCalledTimes(20);
+    expect(String(body.note)).toMatch(/COURTWATCH_COURT_WALK_PAGES/);
     expect(String(body.note)).not.toMatch(/full courts table/i);
+    expect(String(body.note)).toMatch(/cannot appear here even if it matches/i);
+    expect(body.complete).toBe(false);
+  });
+
+  it("RED LEG: a rate limit partway through the walk returns the courts already read, marked incomplete", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(COURTS_PAGE_1));
+    // the hourly ceiling names a wait the retries cannot outlast, so it is not retried
+    fetchMock.mockResolvedValue(
+      textResponse(JSON.stringify({ detail: "Request was throttled. Rate limit exceeded: 50/hour. Expected available in 3000 seconds." }), { ok: false, status: 429 }),
+    );
+    const result = await call("court_list", { q: "court" });
+    expect(result.isError).toBeFalsy();
+    const body = payload(result);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(body.complete).toBe(false);
+    expect(body.returned).toBeGreaterThan(0);
+    expect(String(body.note)).toMatch(/rate limit/i);
     expect(String(body.note)).toMatch(/cannot appear here even if it matches/i);
   });
 });
