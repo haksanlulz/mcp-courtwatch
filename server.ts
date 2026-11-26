@@ -2465,13 +2465,39 @@ function toolErrorMessage(tool: string, err: unknown): string {
   );
 }
 
+// MCP security audit 2026-11-25: every tool declares its hints; withAnnotations
+// refuses to list a tool that has none, so a new tool cannot ship unclassified.
+// Every tool here only reads, from CourtListener's public API (open world).
+const READ_REMOTE = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+const TOOL_ANNOTATIONS: Record<string, typeof READ_REMOTE> = {
+  opinion_search: READ_REMOTE,
+  docket_lookup: READ_REMOTE,
+  court_list: READ_REMOTE,
+  case_detail: READ_REMOTE,
+  citation_lookup: READ_REMOTE,
+  cited_by: READ_REMOTE,
+  case_authorities: READ_REMOTE,
+  docket_entries: READ_REMOTE,
+  oral_arguments: READ_REMOTE,
+  judge_lookup: READ_REMOTE,
+  oral_argument_transcript: READ_REMOTE,
+};
+
+function withAnnotations<T extends { name: string }>(tools: T[]): (T & { annotations: (typeof TOOL_ANNOTATIONS)[string] })[] {
+  return tools.map((t) => {
+    const annotations = TOOL_ANNOTATIONS[t.name];
+    if (!annotations) throw new Error(`tool ${t.name} has no annotations: add it to TOOL_ANNOTATIONS`);
+    return { ...t, annotations };
+  });
+}
+
 export function createServer(): Server {
   const server = new Server(
     { name: "mcp-courtwatch", version: "1.3.0" },
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: withAnnotations(TOOLS) }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
