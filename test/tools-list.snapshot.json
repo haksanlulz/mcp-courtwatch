@@ -1,0 +1,408 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "The reverse of cited_by: every authority a given opinion RELIES ON (its table of authorities), with a depth count of how many times each is cited. Pass the citing opinion's id. Requires COURTLISTENER_API_TOKEN (authentication-only endpoint). Returns cited opinion ids; fetch interesting ones with case_detail (type opinion) or their clusters. A table longer than `limit` continues from the returned next_cursor.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max authorities to return (1-50, default 50).",
+          "type": "integer"
+        },
+        "opinion_id": {
+          "description": "Numeric OPINION id whose authorities to list.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "opinion_id"
+      ],
+      "type": "object"
+    },
+    "name": "case_authorities"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Fetch a full case by id: a cluster (the case: name, citations, date, judges, and its opinion ids) or a single opinion (paged text, with optional literal phrase search across the whole document). Requires COURTLISTENER_API_TOKEN (these endpoints are authentication-only). Use the cluster_id from opinion_search results.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "find": {
+          "description": "Opinion only: literal case-insensitive phrase to find at or after offset, including beyond the first page. Returns text beginning at the match and the next match offset.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "description": "Numeric cluster id (default) or opinion id.",
+          "type": "integer"
+        },
+        "max_chars": {
+          "description": "Opinion only: characters per page (default and maximum 50000).",
+          "maximum": 50000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Opinion only: normalized-text character offset, default 0. Use next_offset to continue reading or next_match_offset to find the next phrase.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "description": "Which resource `id` refers to (default \"cluster\"). A cluster is the case; an opinion is one document within it.",
+          "enum": [
+            "cluster",
+            "opinion"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "case_detail"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Verify legal citations against CourtListener's database of real cases before relying on them; catches fabricated or mangled citations. Pass free text (a brief, memo, or draft) or a single citation string; every citation recognized in the text is checked. Per citation: FOUND (with case name, date, and link) or an explicit NOT_FOUND / UNKNOWN_REPORTER flag. Requires COURTLISTENER_API_TOKEN (authentication-only endpoint). Caps: 64000 characters of text and 250 citations per call (server rate limit: 60 citations/min).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "description": "Free text to scan for citations (max 64000 characters), or a single citation string like \"410 U.S. 113\". The first 250 citations recognized are looked up; any beyond that are returned flagged NOT_CHECKED_OVER_CAP.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "citation_lookup"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Every opinion that CITES a given opinion — the free version of a citator check ('is this case still being relied on, and by whom'). Pass an opinion id. The keyless way to get one is an opinion_search hit's `opinions[].id`; case_detail's sub_opinion_ids also gives it, but that endpoint needs a token, so use opinion_search when you have none. Returns citing opinions newest-first or most-cited-first with the same fields as opinion_search. Works without a token. NOTE: this reports who cites the case; it does NOT classify the treatment (followed/distinguished/overruled) — read the citing opinions.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max results from this page (1-20, default 20).",
+          "type": "integer"
+        },
+        "opinion_id": {
+          "description": "Numeric OPINION id (not a cluster id). Keyless source: an opinion_search hit's opinions[].id. With a token, case_detail on a cluster also lists its sub_opinion_ids.",
+          "type": "integer"
+        },
+        "order_by": {
+          "description": "Sort order (default newest).",
+          "enum": [
+            "newest",
+            "oldest",
+            "most_cited",
+            "relevance"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "opinion_id"
+      ],
+      "type": "object"
+    },
+    "name": "cited_by"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "List CourtListener courts and their ids (the values used as the `court` filter in opinion_search / docket_lookup). Optionally filter by jurisdiction code and/or a name substring. Jurisdiction codes include \"F\" (federal appellate/other), \"FD\" (federal district), \"FB\" (bankruptcy), \"S\" (state), \"SA\" (state appellate), \"SS\" (state supreme). Works without a token.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "jurisdiction": {
+          "description": "Optional jurisdiction code filter (e.g. \"F\", \"FD\", \"S\").",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max courts to return (1-50, default 25).",
+          "type": "integer"
+        },
+        "q": {
+          "description": "Optional case-insensitive substring matched against court id / full name / short name / citation string (applied to the fetched page).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "court_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "The actual filing history of a federal docket from the RECAP archive: numbered entries, dates, descriptions, and any archived PACER documents (with page counts and availability). Pass a docket_id from docket_lookup. Requires COURTLISTENER_API_TOKEN (authentication-only endpoint). Coverage note: RECAP holds what its users have bought from PACER — an entry or document not present may still exist on PACER.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string"
+        },
+        "docket_id": {
+          "description": "Numeric docket id (from docket_lookup results).",
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Max entries to return (1-50, default 50).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "docket_id"
+      ],
+      "type": "object"
+    },
+    "name": "docket_entries"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Search court dockets (CourtListener type=r) by case name, free text, and/or docket number, optionally scoped to a court. Returns case name, court, docket number, filed/terminated dates, nature of suit, and a link. Works without a token.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "court": {
+          "description": "Optional court id filter (e.g. \"nysd\"). Get ids from court_list.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque pagination cursor from a previous response's next_cursor; fetches the next page (keep the other args the same).",
+          "type": "string"
+        },
+        "docket_number": {
+          "description": "Docket number to match (e.g. \"1:20-cv-03590\").",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max results from this page (1-20, default 20). The /search/ endpoint returns one fixed page of ~20; to get more, pass the response's next_cursor back as cursor.",
+          "type": "integer"
+        },
+        "q": {
+          "description": "Case name or free-text query (e.g. an employer or agency name).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "docket_lookup"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Look up judges / people in CourtListener's judiciary database (type via /people/) by last and/or first name. Returns id, assembled name, birth/death dates and place, gender, and how many positions are on file. Works without a token.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Max people to return (1-20, default 10). /people/ serves one fixed page of 20 and ignores page_size.",
+          "type": "integer"
+        },
+        "name_first": {
+          "description": "First name to match (e.g. \"Ruth\").",
+          "type": "string"
+        },
+        "name_last": {
+          "description": "Last name to match (e.g. \"Ginsburg\").",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "judge_lookup"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Full-text search of U.S. case law / court opinions (CourtListener type=o). Returns the top matching page (up to `limit`) with case name, court, date filed, citations, docket number, a snippet, citation count, and a link. Each hit also carries `opinions`: the ids of the opinions in that case, which is the keyless input to cited_by. Works without a token; set COURTLISTENER_API_TOKEN for a higher rate limit.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "court": {
+          "description": "Optional court id to filter to (e.g. \"scotus\", \"ca9\", \"nysd\"). Get ids from court_list.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque pagination cursor from a previous response's next_cursor; fetches the next page (keep the other args the same).",
+          "type": "string"
+        },
+        "filed_after": {
+          "description": "Optional ISO date (YYYY-MM-DD); only opinions filed on/after.",
+          "type": "string"
+        },
+        "filed_before": {
+          "description": "Optional ISO date (YYYY-MM-DD); only opinions filed on/before.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max results from this page (1-20, default 20). The /search/ endpoint returns one fixed page of ~20; to get more, pass the response's next_cursor back as cursor.",
+          "type": "integer"
+        },
+        "order_by": {
+          "description": "Sort order (default relevance).",
+          "enum": [
+            "relevance",
+            "newest",
+            "oldest",
+            "most_cited"
+          ],
+          "type": "string"
+        },
+        "q": {
+          "description": "Search query. Supports plain terms and phrases (e.g. \"warrantless search\", \"qualified immunity\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "type": "object"
+    },
+    "name": "opinion_search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "The text of an oral argument, from CourtListener's Whisper transcript of the recording (/audio/{id}/). Pass an audio_id from oral_arguments. Works without a token. READ THIS BEFORE QUOTING: the text is MACHINE speech-to-text, never a court reporter's certified transcript — it mishears names, numbers and citations and carries no speaker attribution. CourtListener's own status for the transcription is reported as stt_verdict, and only a COMPLETE one returns text: a recording flagged TRANSCRIPTION_DOES_NOT_MATCH_AUDIO (a Whisper hallucination — 708 of 103,278 records on 2026-09-14) has text on the record and it is withheld here rather than presented as a transcript. Long arguments run past 100,000 characters, so text is paged: up to 50000 characters per call (default 15000), with truncated and next_offset when there is more.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_id": {
+          "description": "Numeric audio id, from an oral_arguments hit's audio_id.",
+          "type": "integer"
+        },
+        "max_chars": {
+          "description": "Characters to return (1-50000, default 15000).",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Character offset to start from (default 0). Pass a previous response's next_offset to continue.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "audio_id"
+      ],
+      "type": "object"
+    },
+    "name": "oral_argument_transcript"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an issue was actually argued. Works without a token. The `snippet` on each hit is an excerpt of a machine-generated Whisper transcript, not a certified one; for the transcript text itself pass a hit's audio_id to oral_argument_transcript.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "argued_after": {
+          "description": "Optional ISO date (YYYY-MM-DD); only arguments on/after.",
+          "type": "string"
+        },
+        "argued_before": {
+          "description": "Optional ISO date (YYYY-MM-DD); only arguments on/before.",
+          "type": "string"
+        },
+        "court": {
+          "description": "Optional court id filter (e.g. \"scotus\", \"ca2\"). Get ids from court_list.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous response's next_cursor.",
+          "type": "string"
+        },
+        "include_transcript_status": {
+          "description": "Report each result's real transcript status (default false). Costs ONE extra API request PER RESULT: the search index does not carry stt_status and /audio/ has no batch id filter (id__in is rejected as an unknown parameter). Left off, every row reads transcript_status \"NOT_CHECKED\". Lower `limit` before turning this on.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Max results from this page (1-20, default 20).",
+          "type": "integer"
+        },
+        "order_by": {
+          "description": "Sort order (default relevance; newest/oldest sort by argue date).",
+          "enum": [
+            "relevance",
+            "newest",
+            "oldest"
+          ],
+          "type": "string"
+        },
+        "q": {
+          "description": "Search query (case name, party, or topic).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "type": "object"
+    },
+    "name": "oral_arguments"
+  }
+]
