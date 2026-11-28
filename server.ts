@@ -2534,7 +2534,7 @@ function withUntrustedLabel<A extends unknown[], R extends { content: unknown[] 
 
 export function createServer(): Server {
   const server = new Server(
-    { name: "mcp-courtwatch", version: "1.3.0" },
+    { name: "mcp-courtwatch", version: "2.0.0" },
     { capabilities: { tools: {} } },
   );
 
