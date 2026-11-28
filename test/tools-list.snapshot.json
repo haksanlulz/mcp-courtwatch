@@ -108,7 +108,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Every opinion that CITES a given opinion — the free version of a citator check ('is this case still being relied on, and by whom'). Pass an opinion id. The keyless way to get one is an opinion_search hit's `opinions[].id`; case_detail's sub_opinion_ids also gives it, but that endpoint needs a token, so use opinion_search when you have none. Returns citing opinions newest-first or most-cited-first with the same fields as opinion_search. Works without a token. NOTE: this reports who cites the case; it does NOT classify the treatment (followed/distinguished/overruled) — read the citing opinions.",
+    "description": "Every opinion that CITES a given opinion — the free version of a citator check ('is this case still being relied on, and by whom'). Pass an opinion id: an opinion_search hit's `opinions[].id`, or a cluster's sub_opinion_ids from case_detail. Returns citing opinions newest-first or most-cited-first with the same fields as opinion_search. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. NOTE: this reports who cites the case; it does NOT classify the treatment (followed/distinguished/overruled) — read the citing opinions.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -121,7 +121,7 @@
           "type": "integer"
         },
         "opinion_id": {
-          "description": "Numeric OPINION id (not a cluster id). Keyless source: an opinion_search hit's opinions[].id. With a token, case_detail on a cluster also lists its sub_opinion_ids.",
+          "description": "Numeric OPINION id (not a cluster id). Source: an opinion_search hit's opinions[].id, or case_detail on a cluster, which lists its sub_opinion_ids.",
           "type": "integer"
         },
         "order_by": {
@@ -149,7 +149,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "List CourtListener courts and their ids (the values used as the `court` filter in opinion_search / docket_lookup). Optionally filter by jurisdiction code and/or a name substring. Jurisdiction codes include \"F\" (federal appellate/other), \"FD\" (federal district), \"FB\" (bankruptcy), \"S\" (state), \"SA\" (state appellate), \"SS\" (state supreme). Works without a token.",
+    "description": "List CourtListener courts and their ids (the values used as the `court` filter in opinion_search / docket_lookup). Optionally filter by jurisdiction code and/or a name substring. Jurisdiction codes include \"F\" (federal appellate/other), \"FD\" (federal district), \"FB\" (bankruptcy), \"S\" (state), \"SA\" (state appellate), \"SS\" (state supreme). Works without a token (verified live 2026-11-28).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -208,7 +208,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Search court dockets (CourtListener type=r) by case name, free text, and/or docket number, optionally scoped to a court. Returns case name, court, docket number, filed/terminated dates, nature of suit, and a link. Works without a token.",
+    "description": "Search court dockets (CourtListener type=r) by case name, free text, and/or docket number, optionally scoped to a court. Returns case name, court, docket number, filed/terminated dates, nature of suit, and a link. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -244,7 +244,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Look up judges / people in CourtListener's judiciary database (type via /people/) by last and/or first name. Returns id, assembled name, birth/death dates and place, gender, and how many positions are on file. Works without a token.",
+    "description": "Look up judges / people in CourtListener's judiciary database (type via /people/) by last and/or first name. Returns id, assembled name, birth/death dates and place, gender, and how many positions are on file. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -272,7 +272,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Full-text search of U.S. case law / court opinions (CourtListener type=o). Returns the top matching page (up to `limit`) with case name, court, date filed, citations, docket number, a snippet, citation count, and a link. Each hit also carries `opinions`: the ids of the opinions in that case, which is the keyless input to cited_by. Works without a token; set COURTLISTENER_API_TOKEN for a higher rate limit.",
+    "description": "Full-text search of U.S. case law / court opinions (CourtListener type=o). Returns the top matching page (up to `limit`) with case name, court, date filed, citations, docket number, a snippet, citation count, and a link. Each hit also carries `opinions`: the ids of the opinions in that case, which is the input to cited_by. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -325,7 +325,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "The text of an oral argument, from CourtListener's Whisper transcript of the recording (/audio/{id}/). Pass an audio_id from oral_arguments. Works without a token. READ THIS BEFORE QUOTING: the text is MACHINE speech-to-text, never a court reporter's certified transcript — it mishears names, numbers and citations and carries no speaker attribution. CourtListener's own status for the transcription is reported as stt_verdict, and only a COMPLETE one returns text: a recording flagged TRANSCRIPTION_DOES_NOT_MATCH_AUDIO (a Whisper hallucination — 708 of 103,278 records on 2026-09-14) has text on the record and it is withheld here rather than presented as a transcript. Long arguments run past 100,000 characters, so text is paged: up to 50000 characters per call (default 15000), with truncated and next_offset when there is more.",
+    "description": "The text of an oral argument, from CourtListener's Whisper transcript of the recording (/audio/{id}/). Pass an audio_id from oral_arguments. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. READ THIS BEFORE QUOTING: the text is MACHINE speech-to-text, never a court reporter's certified transcript — it mishears names, numbers and citations and carries no speaker attribution. CourtListener's own status for the transcription is reported as stt_verdict, and only a COMPLETE one returns text: a recording flagged TRANSCRIPTION_DOES_NOT_MATCH_AUDIO (a Whisper hallucination — 708 of 103,278 records on 2026-09-14) has text on the record and it is withheld here rather than presented as a transcript. Long arguments run past 100,000 characters, so text is paged: up to 50000 characters per call (default 15000), with truncated and next_offset when there is more.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -356,7 +356,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an issue was actually argued. Works without a token. The `snippet` on each hit is an excerpt of a machine-generated Whisper transcript, not a certified one; for the transcript text itself pass a hit's audio_id to oral_argument_transcript.",
+    "description": "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an issue was actually argued. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. The `snippet` on each hit is an excerpt of a machine-generated Whisper transcript, not a certified one; for the transcript text itself pass a hit's audio_id to oral_argument_transcript.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

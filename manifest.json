@@ -50,7 +50,7 @@
     "courtlistener_api_token": {
       "type": "string",
       "title": "CourtListener API token",
-      "description": "Optional. Free at courtlistener.com (create an account, then Profile > API). Without it, opinion_search, docket_lookup, court_list, judge_lookup, cited_by, oral_arguments and oral_argument_transcript all still work at the unauthenticated rate limit; case_detail, citation_lookup, case_authorities and docket_entries need it. A token also raises the rate limit on the keyless tools. Sent only to courtlistener.com, as an Authorization header, and never logged.",
+      "description": "Free at courtlistener.com (create an account, then Profile > API). Without it only court_list works: on 2026-11-28 CourtListener refused anonymous requests (HTTP 401) for opinion_search, docket_lookup, judge_lookup, cited_by, oral_arguments and oral_argument_transcript, and case_detail, citation_lookup, case_authorities and docket_entries have always needed it. Sent only to courtlistener.com, as an Authorization header, and never logged.",
       "sensitive": true,
       "required": false
     }
@@ -58,15 +58,15 @@
   "tools": [
     {
       "name": "opinion_search",
-      "description": "Full-text search of U.S. case law and court opinions. Keyless."
+      "description": "Full-text search of U.S. case law and court opinions. Needs a token (anonymous access refused 2026-11-28)."
     },
     {
       "name": "docket_lookup",
-      "description": "Search court dockets by case name, free text, or docket number. Keyless."
+      "description": "Search court dockets by case name, free text, or docket number. Needs a token (anonymous access refused 2026-11-28)."
     },
     {
       "name": "court_list",
-      "description": "List CourtListener courts and the ids used as the court filter. Keyless."
+      "description": "List CourtListener courts and the ids used as the court filter. Keyless (verified 2026-11-28)."
     },
     {
       "name": "case_detail",
@@ -78,11 +78,11 @@
     },
     {
       "name": "judge_lookup",
-      "description": "Look up judges and people in CourtListener's judiciary database. Keyless."
+      "description": "Look up judges and people in CourtListener's judiciary database. Needs a token (anonymous access refused 2026-11-28)."
     },
     {
       "name": "cited_by",
-      "description": "Every opinion citing a given opinion — a free citator check. No treatment classification. Keyless."
+      "description": "Every opinion citing a given opinion — a free citator check. No treatment classification. Needs a token (anonymous access refused 2026-11-28)."
     },
     {
       "name": "case_authorities",
@@ -94,11 +94,11 @@
     },
     {
       "name": "oral_arguments",
-      "description": "Search oral-argument audio recordings. Keyless."
+      "description": "Search oral-argument audio recordings. Needs a token (anonymous access refused 2026-11-28)."
     },
     {
       "name": "oral_argument_transcript",
-      "description": "An oral argument's machine-generated Whisper transcript, paged, with CourtListener's own transcription-status verdict. Keyless."
+      "description": "An oral argument's machine-generated Whisper transcript, paged, with CourtListener's own transcription-status verdict. Needs a token (anonymous access refused 2026-11-28)."
     }
   ],
   "tools_generated": false,

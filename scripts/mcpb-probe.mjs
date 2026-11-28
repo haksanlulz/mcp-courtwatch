@@ -166,15 +166,35 @@ try {
   ok(`tools/list -> ${served.length}, matching the manifest: ${served.join(", ")}`);
 
   // --- 5. a keyless call has to round-trip, or the bundle is a brochure ----
+  // court_list, because it is the one tool upstream still serves without a
+  // token: on 2026-11-28 /search/ (opinion_search, docket_lookup, cited_by,
+  // oral_arguments), /people/ (judge_lookup) and /audio/{id}/
+  // (oral_argument_transcript) all answered HTTP 401 "Authentication
+  // credentials were not provided." to an anonymous curl, and /courts/
+  // answered 200. This step called opinion_search until then.
+  const KEYLESS_TOOL = "court_list";
   send({
     jsonrpc: "2.0",
     id: 4,
     method: "tools/call",
-    params: { name: "opinion_search", arguments: { q: "warranty of habitability", court: "ny", limit: 1 } },
+    params: { name: KEYLESS_TOOL, arguments: { jurisdiction: "S", limit: 1 } },
   });
   const called = await waitFor(4, 45000);
   if (!called?.result) fail(`no tools/call response. stderr: ${err.slice(0, 600)}`);
-  const text = called.result.content?.[0]?.text ?? "";
+
+  // Every result opens with the fixed untrusted-content label (b499719) and
+  // the data follows it. This step read content[0] for two releases, so it
+  // parsed the label as JSON and its skip regex never saw upstream's message.
+  // The label is checked, not just skipped: a result without it is a
+  // regression in the bundle.
+  const blocks = called.result.content ?? [];
+  const LABEL_PREFIX = "[UNTRUSTED THIRD-PARTY CONTENT]";
+  if (!String(blocks[0]?.text ?? "").startsWith(LABEL_PREFIX)) {
+    fail(`the result does not open with the untrusted-content label: ${String(blocks[0]?.text ?? "").slice(0, 160)}`);
+  }
+  const data = blocks.slice(1).find((b) => b?.type === "text" && !String(b.text).startsWith(LABEL_PREFIX));
+  const text = data?.text ?? "";
+  if (!data) fail("the result carries the label and no data block");
   if (called.result.isError) {
     // A throttle or an upstream outage is not a verdict on this bundle. It is
     // also not a pass: it is reported as a skip and named.
@@ -186,16 +206,30 @@ try {
     // broken. This rung runs on every push, which makes the false red the
     // likely one.
     if (NOT_A_VERDICT_ON_THE_BUNDLE.test(text)) {
-      console.log(`  SKIP keyless opinion_search: upstream said "${text.slice(0, 160)}"`);
+      console.log(`  SKIP keyless ${KEYLESS_TOOL}: upstream said "${text.slice(0, 160)}"`);
       console.log("PASS (with 1 skipped) — the bundle starts and serves its tools; the live call could not be made.");
       process.exit(0);
     }
-    fail(`keyless opinion_search returned an error: ${text.slice(0, 400)}`);
+    // Upstream withdrawing anonymous access from the last keyless endpoint is
+    // a fact about CourtListener, not about this bundle: the server read no
+    // token (it was stripped) and said so. Named, never a pass.
+    if (/HTTP 401|Anonymous API access is unavailable/i.test(text)) {
+      console.log(`  SKIP keyless ${KEYLESS_TOOL}: no tool is keyless any more — upstream refused anonymous access: "${text.slice(0, 160)}"`);
+      console.log("PASS (with 1 skipped) — the bundle starts and serves its tools; no keyless call exists to make.");
+      process.exit(0);
+    }
+    fail(`keyless ${KEYLESS_TOOL} returned an error: ${text.slice(0, 400)}`);
   }
-  const body = JSON.parse(text);
-  if (!Array.isArray(body.results)) fail("keyless opinion_search returned no results array");
-  if (typeof body.disclaimer !== "string") fail("keyless opinion_search returned no records-only disclaimer");
-  ok(`keyless opinion_search -> ${body.returned} result(s): ${body.results[0]?.case_name ?? "(none)"}`);
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    fail(`keyless ${KEYLESS_TOOL} returned a data block that is not JSON: ${text.slice(0, 160)}`);
+  }
+  if (!Array.isArray(body.courts)) fail(`keyless ${KEYLESS_TOOL} returned no courts array`);
+  if (body.courts.length === 0) fail(`keyless ${KEYLESS_TOOL} returned no state courts`);
+  if (typeof body.disclaimer !== "string") fail(`keyless ${KEYLESS_TOOL} returned no records-only disclaimer`);
+  ok(`keyless ${KEYLESS_TOOL} -> ${body.returned} court(s): ${body.courts[0]?.id ?? "?"} ${body.courts[0]?.full_name ?? ""}`);
 
   console.log("PASS — the bundle installs, starts through its own mcp_config, and answers a keyless call.");
 } finally {

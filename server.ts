@@ -9,11 +9,12 @@
 //   Auth:   Authorization: Token <token>   (free token; see token() below)
 //
 // Endpoint access (see README.md "Data source"):
-//   /search/  (type=o opinions, type=r dockets), /courts/, /people/ all answer
-//   unauthenticated at low rate, so those tools attach the token only when it is
-//   set (a token raises the rate limit). /clusters/{id}/, /opinions/{id}/, and
-//   POST /citation-lookup/ return HTTP 401 without a token, so case_detail and
-//   citation_lookup require one.
+//   /search/ (type=o, r, oa), /courts/, /people/ and /audio/{id}/ are tried
+//   without a token when none is set; the token is attached whenever it is.
+//   Live 2026-11-28: only /courts/ still answers anonymously. /search/, /people/ and
+//   /audio/{id}/ answer HTTP 401, so only court_list works without a token.
+//   /clusters/{id}/, /opinions/{id}/, /opinions-cited/, /docket-entries/ and
+//   POST /citation-lookup/ are token-only by design (requireAuth, pre-flight).
 //
 // This module normalizes CourtListener's raw JSON (caseName, dateFiled,
 // cluster_id, docket_absolute_url, ...) into clean, documented tool outputs
@@ -1433,9 +1434,8 @@ const TOOLS: Tool[] = [
       "Full-text search of U.S. case law / court opinions (CourtListener type=o). " +
       "Returns the top matching page (up to `limit`) with case name, court, date filed, " +
       "citations, docket number, a snippet, citation count, and a link. Each hit also " +
-      "carries `opinions`: the ids of the opinions in that case, which is the keyless " +
-      "input to cited_by. Works without a " +
-      "token; set COURTLISTENER_API_TOKEN for a higher rate limit.",
+      "carries `opinions`: the ids of the opinions in that case, which is the " +
+      "input to cited_by. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1472,7 +1472,7 @@ const TOOLS: Tool[] = [
     description:
       "Search court dockets (CourtListener type=r) by case name, free text, and/or docket number, " +
       "optionally scoped to a court. Returns case name, court, docket number, filed/terminated dates, " +
-      "nature of suit, and a link. Works without a token.",
+      "nature of suit, and a link. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1498,7 +1498,7 @@ const TOOLS: Tool[] = [
       "List CourtListener courts and their ids (the values used as the `court` filter in opinion_search / " +
       "docket_lookup). Optionally filter by jurisdiction code and/or a name substring. " +
       'Jurisdiction codes include "F" (federal appellate/other), "FD" (federal district), "FB" (bankruptcy), ' +
-      '"S" (state), "SA" (state appellate), "SS" (state supreme). Works without a token.',
+      '"S" (state), "SA" (state appellate), "SS" (state supreme). Works without a token (verified live 2026-11-28).',
     inputSchema: {
       type: "object",
       properties: {
@@ -1563,11 +1563,10 @@ const TOOLS: Tool[] = [
     name: "cited_by",
     description:
       "Every opinion that CITES a given opinion — the free version of a citator check ('is this " +
-      "case still being relied on, and by whom'). Pass an opinion id. The keyless way to get one " +
-      "is an opinion_search hit's `opinions[].id`; case_detail's sub_opinion_ids also gives it, " +
-      "but that endpoint needs a token, so use opinion_search when you have none. Returns citing " +
-      "opinions newest-first or most-cited-first with the same fields as opinion_search. Works " +
-      "without a token. NOTE: this reports who cites the case; it does NOT classify the treatment " +
+      "case still being relied on, and by whom'). Pass an opinion id: an opinion_search hit's " +
+      "`opinions[].id`, or a cluster's sub_opinion_ids from case_detail. Returns citing " +
+      "opinions newest-first or most-cited-first with the same fields as opinion_search. " +
+      "Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. NOTE: this reports who cites the case; it does NOT classify the treatment " +
       "(followed/distinguished/overruled) — read the citing opinions.",
     inputSchema: {
       type: "object",
@@ -1575,8 +1574,8 @@ const TOOLS: Tool[] = [
         opinion_id: {
           type: "integer",
           description:
-            "Numeric OPINION id (not a cluster id). Keyless source: an opinion_search hit's opinions[].id. " +
-            "With a token, case_detail on a cluster also lists its sub_opinion_ids.",
+            "Numeric OPINION id (not a cluster id). Source: an opinion_search hit's opinions[].id, " +
+            "or case_detail on a cluster, which lists its sub_opinion_ids.",
         },
         order_by: { type: "string", enum: ["newest", "oldest", "most_cited", "relevance"], description: "Sort order (default newest)." },
         limit: { type: "integer", description: `Max results from this page (1-${SEARCH_PAGE_SIZE}, default ${SEARCH_PAGE_SIZE}).` },
@@ -1629,7 +1628,7 @@ const TOOLS: Tool[] = [
     description:
       "Search oral-argument audio recordings (CourtListener type=oa): case name, court, argue " +
       "date, judges on the panel, duration, and an MP3 download link. Useful for hearing how an " +
-      "issue was actually argued. Works without a token. The `snippet` on each hit is an excerpt " +
+      "issue was actually argued. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. The `snippet` on each hit is an excerpt " +
       "of a machine-generated Whisper transcript, not a certified one; for the transcript text " +
       "itself pass a hit's audio_id to oral_argument_transcript.",
     inputSchema: {
@@ -1660,7 +1659,7 @@ const TOOLS: Tool[] = [
     description:
       "Look up judges / people in CourtListener's judiciary database (type via /people/) by last and/or first name. " +
       "Returns id, assembled name, birth/death dates and place, gender, and how many positions are on file. " +
-      "Works without a token.",
+      "Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1679,7 +1678,7 @@ const TOOLS: Tool[] = [
     name: "oral_argument_transcript",
     description:
       "The text of an oral argument, from CourtListener's Whisper transcript of the recording " +
-      "(/audio/{id}/). Pass an audio_id from oral_arguments. Works without a token. " +
+      "(/audio/{id}/). Pass an audio_id from oral_arguments. Needs COURTLISTENER_API_TOKEN in practice: CourtListener refused anonymous requests with HTTP 401 on 2026-11-28. " +
       "READ THIS BEFORE QUOTING: the text is MACHINE speech-to-text, never a court reporter's " +
       "certified transcript — it mishears names, numbers and citations and carries no speaker " +
       "attribution. CourtListener's own status for the transcription is reported as stt_verdict, " +
@@ -2394,8 +2393,9 @@ async function oralArgumentTranscript(args: Row): Promise<unknown> {
   }
   const maxChars = clampLimit(args.max_chars, TRANSCRIPT_DEFAULT_CHARS, TRANSCRIPT_MAX_CHARS);
 
-  // /audio/{id}/ answers unauthenticated (verified live 2026-09-14); the token
-  // is attached opportunistically, for the higher rate limit only.
+  // /audio/{id}/ answered unauthenticated on 2026-09-14 and HTTP 401 without a
+  // token on 2026-11-28. The token is still attached only when set, so a
+  // tokenless call gets the anonymous-401 setup guidance, not a pre-flight throw.
   const source = `oral_argument_transcript (/audio/${audioId}/)`;
   const a = expectDetail(
     await clGet(`/audio/${audioId}/`, {}, { expectDetail: { id: audioId, source } }),
